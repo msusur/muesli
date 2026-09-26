@@ -44,11 +44,18 @@ public struct TranscriptSegment: Codable, Sendable, Hashable, Identifiable {
 public struct Transcript: Codable, Sendable, Equatable {
     public var startedAt: Date
     public var locale: String
+    /// Where the meeting happened, so "by Monday" resolves in the right zone even
+    /// if the notes are generated later or elsewhere. Absent in older files.
+    public var timeZoneIdentifier: String?
     public private(set) var segments: [TranscriptSegment]
 
-    public init(startedAt: Date = Date(), locale: String, segments: [TranscriptSegment] = []) {
+    public init(
+        startedAt: Date = Date(), locale: String, timeZoneIdentifier: String? = TimeZone.current.identifier,
+        segments: [TranscriptSegment] = []
+    ) {
         self.startedAt = startedAt
         self.locale = locale
+        self.timeZoneIdentifier = timeZoneIdentifier
         self.segments = segments.sorted { $0.start < $1.start }
     }
 
@@ -64,6 +71,24 @@ public struct Transcript: Codable, Sendable, Equatable {
     }
 
     public var duration: TimeInterval { segments.map(\.end).max() ?? 0 }
+
+    public var timeZone: TimeZone { timeZoneIdentifier.flatMap(TimeZone.init(identifier:)) ?? .current }
+
+    // MARK: Persistence
+
+    /// The on-disk format: pretty, key-sorted JSON with ISO-8601 dates.
+    public func jsonData() throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        return try encoder.encode(self)
+    }
+
+    public static func load(jsonData data: Data) throws -> Transcript {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try decoder.decode(Transcript.self, from: data)
+    }
 
     // MARK: Rendering
 

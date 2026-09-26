@@ -8,6 +8,8 @@ let package = Package(
         .library(name: "MuesliCore", targets: ["MuesliCore"]),
         .library(name: "MuesliAudio", targets: ["MuesliAudio"]),
         .library(name: "MuesliTranscribe", targets: ["MuesliTranscribe"]),
+        .library(name: "MuesliSummarize", targets: ["MuesliSummarize"]),
+        .library(name: "MuesliActions", targets: ["MuesliActions"]),
         .executable(name: "muesli", targets: ["muesli"]),
     ],
     targets: [
@@ -21,9 +23,15 @@ let package = Package(
         // On-device speech-to-text via Apple's SpeechAnalyzer.
         .target(name: "MuesliTranscribe", dependencies: ["MuesliCore", "MuesliAudio"]),
 
+        // Notes generation: Apple Intelligence, Claude, or any OpenAI-compatible server.
+        .target(name: "MuesliSummarize", dependencies: ["MuesliCore"]),
+
+        // Reminders and Calendar via EventKit (macOS and iOS).
+        .target(name: "MuesliActions", dependencies: ["MuesliCore"]),
+
         .executableTarget(
             name: "muesli",
-            dependencies: ["MuesliCore", "MuesliAudio", "MuesliTranscribe"],
+            dependencies: ["MuesliCore", "MuesliAudio", "MuesliTranscribe", "MuesliSummarize", "MuesliActions"],
             linkerSettings: [
                 // Embed usage strings so the mic / system-audio TCC prompts have
                 // a description even for a bare command-line binary.
@@ -37,6 +45,8 @@ let package = Package(
         ),
 
         .testTarget(name: "MuesliCoreTests", dependencies: ["MuesliCore"]),
+        .testTarget(name: "MuesliAudioTests", dependencies: ["MuesliAudio"]),
+        .testTarget(name: "MuesliSummarizeTests", dependencies: ["MuesliSummarize", "MuesliCore"]),
         .testTarget(
             name: "MuesliTranscribeTests",
             dependencies: ["MuesliTranscribe", "MuesliAudio", "MuesliCore"],
