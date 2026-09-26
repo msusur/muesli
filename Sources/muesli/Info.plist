@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>dev.muesli.cli</string>
+	<key>CFBundleName</key>
+	<string>muesli</string>
+	<key>CFBundleVersion</key>
+	<string>0.1.0</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>muesli records your microphone so it can transcribe your side of a conversation. Audio is processed on-device.</string>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>muesli records system audio so it can transcribe the other participants in a call or meeting. Audio is processed on-device.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>muesli transcribes audio on-device using Apple's speech recognition.</string>
+</dict>
+</plist>
