@@ -74,6 +74,9 @@ COMMON OPTIONS
 RECORD
   --duration <secs>   Stop automatically after this many seconds
   --no-mic            Don't capture the microphone ("Me")
+  --engine <name>     Speech engine: apple (default; live), whisper (after you stop; 99
+                      languages), or apple+whisper (live draft, Whisper as the final text)
+  --keep-audio        Keep the recorded audio (whisper engines; otherwise deleted after use)
   --no-system         Don't capture system audio ("Them")
   --app <names>       Capture system audio from only these apps (comma-separated names or
                       bundle ids, e.g. "zoom" or "Google Chrome"). Follows the app as it
@@ -83,6 +86,12 @@ RECORD
 
 TRANSCRIBE
   --speaker <me|them> Label for the file's speaker (default: them)
+  --engine <name>     apple (default) or whisper. Pass a session folder to re-transcribe its
+                      recorded audio with Whisper.
+
+WHISPER (needs `python3 -m pip install mlx-whisper`)
+  --whisper-model <m> Hugging Face repo or folder (default: mlx-community/whisper-large-v3-mlx)
+  --whisper-language  A code such as en, ar, ko; "auto" detects it (default: from --locale, else auto)
 
 SUMMARIZE (also used by `record --summarize`)
   --backend <name>    apple         Apple's on-device model (default when available)
@@ -123,6 +132,7 @@ struct Options {
         "--locale", "--out", "--title", "--duration", "--speaker",
         "--backend", "--model", "--base-url", "--context-tokens", "--api-key-env", "--notes",
         "--only", "--reminders-list", "--calendar", "--app", "--exclude-app",
+        "--engine", "--whisper-model", "--whisper-language",
     ]
 
     init(_ args: [String]) throws {

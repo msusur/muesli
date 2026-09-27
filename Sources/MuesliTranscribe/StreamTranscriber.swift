@@ -119,7 +119,7 @@ public struct StreamTranscriber: Sendable {
             }
 
             group.addTask {
-                var converter: BufferConverter?
+                var converter: PCMConverter?
                 var sawFirst = false
                 for await chunk in chunks {
                     if !sawFirst {
@@ -129,10 +129,18 @@ public struct StreamTranscriber: Sendable {
                         }
                     }
                     if converter == nil || converter?.inputFormat != chunk.buffer.format {
-                        converter = try BufferConverter(from: chunk.buffer.format, to: analyzerFormat)
+                        do {
+                            converter = try PCMConverter(from: chunk.buffer.format, to: analyzerFormat)
+                        } catch {
+                            throw TranscribeError.conversion(error.localizedDescription)
+                        }
                     }
-                    if let converted = try converter?.convert(chunk.buffer) {
-                        inputContinuation.yield(AnalyzerInput(buffer: converted))
+                    do {
+                        if let converted = try converter?.convert(chunk.buffer) {
+                            inputContinuation.yield(AnalyzerInput(buffer: converted))
+                        }
+                    } catch {
+                        throw TranscribeError.conversion(error.localizedDescription)
                     }
                 }
                 inputContinuation.finish()
@@ -152,48 +160,5 @@ public struct StreamTranscriber: Sendable {
             }
         }
         return count > 0 ? total / Double(count) : nil
-    }
-}
-
-/// Wraps `AVAudioConverter` for the "device format → analyzer format" hop.
-private struct BufferConverter {
-    let inputFormat: AVAudioFormat
-    private let outputFormat: AVAudioFormat
-    private let converter: AVAudioConverter?
-
-    init(from input: AVAudioFormat, to output: AVAudioFormat) throws {
-        inputFormat = input
-        outputFormat = output
-        if input == output {
-            converter = nil
-        } else {
-            guard let converter = AVAudioConverter(from: input, to: output) else {
-                throw StreamTranscriber.TranscribeError.conversion("\(input) → \(output)")
-            }
-            self.converter = converter
-        }
-    }
-
-    func convert(_ buffer: AVAudioPCMBuffer) throws -> AVAudioPCMBuffer? {
-        guard let converter else { return buffer }
-        let ratio = outputFormat.sampleRate / inputFormat.sampleRate
-        let capacity = AVAudioFrameCount((Double(buffer.frameLength) * ratio).rounded(.up)) + 64
-        guard let output = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: capacity) else { return nil }
-
-        var supplied = false
-        var error: NSError?
-        let status = converter.convert(to: output, error: &error) { _, inputStatus in
-            if supplied {
-                inputStatus.pointee = .noDataNow
-                return nil
-            }
-            supplied = true
-            inputStatus.pointee = .haveData
-            return buffer
-        }
-        if status == .error {
-            throw StreamTranscriber.TranscribeError.conversion(error?.localizedDescription ?? "unknown")
-        }
-        return output.frameLength > 0 ? output : nil
     }
 }

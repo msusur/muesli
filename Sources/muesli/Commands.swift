@@ -72,19 +72,34 @@ struct RecordCommand {
         let wantSystem = !options.has("--no-system")
         guard wantMic || wantSystem else { throw UsageError("--no-mic and --no-system together leave nothing to record") }
         let scope = try systemScope(options, wantSystem: wantSystem)
+        let engine = try Engine(options)
+        let keepAudio = options.has("--keep-audio")
 
         let duration = try options.value("--duration").map { raw -> TimeInterval in
             guard let d = TimeInterval(raw), d > 0 else { throw UsageError("--duration must be a positive number of seconds") }
             return d
         }
 
-        // Fail now, not after an hour-long meeting, if the summarizer can't work.
+        // Fail now, not after an hour-long meeting, if something can't work.
         let generator = options.has("--summarize") ? try await makeGenerator(options) : nil
+        let whisper = whisperConfiguration(options)
+        if engine.usesWhisper {
+            guard !options.has("--no-save") else {
+                throw UsageError("--engine whisper needs to save the recording, so it can't be combined with --no-save")
+            }
+            try preflightWhisper(whisper)
+        }
 
-        let locale = try await prepareLocale(resolveLocale(options))
+        // Apple's recognizer needs a supported locale; Whisper doesn't, which is
+        // the point of using it for languages Apple can't do.
+        let locale = engine.usesApple ? try await prepareLocale(resolveLocale(options)) : resolveLocale(options)
         let sessionStart = HostClock.now()
         let startedAt = Date()
         let builder = TranscriptBuilder(startedAt: startedAt, locale: locale.identifier)
+        let directory = options.has("--no-save") ? nil : (
+            options.value("--out").map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) }
+                ?? defaultOutputDirectory(for: startedAt))
+        let audioFolder = directory?.appending(path: SessionAudio.folderName, directoryHint: .isDirectory)
 
         let mic = MicrophoneCapture()
         let system = SystemAudioCapture(scope: scope)
@@ -102,23 +117,37 @@ struct RecordCommand {
                 break
             }
         }
-        var tasks: [Task<Void, Error>] = []
 
-        func consume(_ chunks: AsyncStream<AudioChunk>, as speaker: Speaker) {
-            let transcriber = StreamTranscriber(speaker: speaker, locale: locale, sessionStart: sessionStart)
-            tasks.append(Task {
-                for try await segment in transcriber.transcribe(chunks) {
-                    await builder.add(segment)
-                    printLive(segment)
+        var tasks: [Task<Void, Error>] = []
+        var recorders: [Speaker: StreamRecorder] = [:]
+
+        func consume(_ raw: AsyncStream<AudioChunk>, as speaker: Speaker) throws {
+            var chunks = raw
+            if engine.usesWhisper, let audioFolder {
+                let recorder = try StreamRecorder(url: audioFolder.appending(path: speaker == .me ? "mic.wav" : "system.wav"))
+                recorders[speaker] = recorder
+                chunks = AudioTee.recording(raw, to: recorder) { error in
+                    fputs("Couldn't write audio: \(error.localizedDescription)\n", stderr)
                 }
-            })
+            }
+            if engine.usesApple {
+                let transcriber = StreamTranscriber(speaker: speaker, locale: locale, sessionStart: sessionStart)
+                tasks.append(Task {
+                    for try await segment in transcriber.transcribe(chunks) {
+                        await builder.add(segment)
+                        printLive(segment)
+                    }
+                })
+            } else {
+                tasks.append(Task { for await _ in chunks {} })
+            }
         }
 
         // Start system audio first: it's the one that needs a permission prompt.
-        if wantSystem { consume(try system.start(), as: .them) }
+        if wantSystem { try consume(try system.start(), as: .them) }
         if wantMic {
             do {
-                consume(try await mic.start(), as: .me)
+                try consume(try await mic.start(), as: .me)
             } catch {
                 system.stop()
                 throw error
@@ -131,29 +160,54 @@ struct RecordCommand {
         case .excluding(let apps): "system audio except \(apps.terms.joined(separator: ", ")) (Them)"
         }
         let sources = [wantMic ? "mic (Me)" : nil, wantSystem ? systemLabel : nil].compactMap { $0 }.joined(separator: " + ")
-        fputs("Recording \(sources) — \(locale.identifier). Press Ctrl-C to stop.\n", stderr)
+        fputs("Recording \(sources) — \(engine.usesApple ? locale.identifier : "Whisper"). Press Ctrl-C to stop.\n", stderr)
+        if engine == .whisper { fputs("Whisper transcribes after you stop, so there's no live text.\n", stderr) }
         if wantMic && wantSystem {
             fputs("Tip: use headphones, or your mic will also pick up the other side from your speakers.\n", stderr)
         }
 
         await waitForStop(after: duration)
 
-        fputs("\nStopping, finalizing transcript…\n", stderr)
+        fputs("\nStopping…\n", stderr)
         mic.stop()
         system.stop()
         for task in tasks { try await task.value }
 
-        let transcript = await builder.transcript
+        var transcript = await builder.transcript
+        var whisperFailed = false
+
+        if engine.usesWhisper, let directory {
+            let streams = [Speaker.me, .them].compactMap { speaker -> RecordedStream? in
+                guard let recorder = recorders[speaker] else { return nil }
+                let offset = recorder.firstHostTime.flatMap { $0 == 0 ? nil : HostClock.seconds(from: sessionStart, to: $0) } ?? 0
+                return RecordedStream(speaker: speaker, wav: recorder.url, offset: max(0, offset))
+            }
+            try SessionAudio(streams: streams.map {
+                .init(speaker: $0.speaker, file: $0.wav.lastPathComponent, startOffset: $0.offset)
+            }).jsonData().write(to: directory.appending(path: "\(SessionAudio.folderName)/\(SessionAudio.manifestName)"))
+
+            do {
+                let refined = try await runWhisperPass(streams, configuration: whisper, startedAt: startedAt)
+                if engine == .appleThenWhisper, !transcript.segments.isEmpty {
+                    try transcript.jsonData().write(to: directory.appending(path: "transcript.apple.json"))
+                }
+                transcript = refined
+                if engine == .whisper { printSegments(transcript) }
+                if !keepAudio { try? FileManager.default.removeItem(at: audioFolder!) }
+            } catch {
+                whisperFailed = true
+                fputs("Whisper failed: \(error.localizedDescription)\nYour audio is kept in \(audioFolder!.path). Retry with:\n  muesli transcribe \"\(directory.path)\" --engine whisper\n", stderr)
+                if engine == .whisper { throw ExitFailure() }
+                fputs("Using the live Apple transcript instead.\n", stderr)
+            }
+        }
+
         guard !transcript.segments.isEmpty else {
             fputs("No speech was recognized, so nothing was saved.\n", stderr)
+            if !whisperFailed, !keepAudio, let audioFolder { try? FileManager.default.removeItem(at: audioFolder) }
             return
         }
-        var directory: URL?
-        if !options.has("--no-save") {
-            directory = options.value("--out").map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) }
-                ?? defaultOutputDirectory(for: startedAt)
-            try save(transcript, title: options.value("--title"), to: directory!)
-        }
+        if let directory { try save(transcript, title: options.value("--title"), to: directory) }
 
         if let generator {
             do {
@@ -200,15 +254,38 @@ struct TranscribeCommand {
     init(_ options: Options) { self.options = options }
 
     func run() async throws {
-        guard let path = options.positional.first else { throw UsageError("transcribe needs an audio file") }
+        guard let path = options.positional.first else { throw UsageError("transcribe needs an audio file, or a session folder to re-transcribe") }
         let url = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
-        guard FileManager.default.fileExists(atPath: url.path) else { throw UsageError("no such file: \(path)") }
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else { throw UsageError("no such file: \(path)") }
+
+        // A session folder can only be re-transcribed from its recorded audio, which is Whisper's job.
+        let engine = isDirectory.boolValue && options.value("--engine") == nil ? Engine.whisper : try Engine(options)
+        if isDirectory.boolValue {
+            guard engine == .whisper else { throw UsageError("a session folder is re-transcribed with --engine whisper") }
+            try await retranscribe(session: url)
+            return
+        }
 
         let speaker: Speaker
         switch options.value("--speaker")?.lowercased() {
         case nil, "them": speaker = .them
         case "me": speaker = .me
         default: throw UsageError("--speaker must be “me” or “them”")
+        }
+
+        if engine == .whisper {
+            let configuration = whisperConfiguration(options)
+            try preflightWhisper(configuration)
+            let scratch = FileManager.default.temporaryDirectory.appending(path: "muesli-\(UUID().uuidString)", directoryHint: .isDirectory)
+            defer { try? FileManager.default.removeItem(at: scratch) }
+            let wav = scratch.appending(path: "audio.wav")
+            try await convertToWAV(url, to: wav)
+            let transcript = try await runWhisperPass(
+                [RecordedStream(speaker: speaker, wav: wav, offset: 0)], configuration: configuration, startedAt: Date())
+            printSegments(transcript)
+            try saveIfRequested(transcript, defaultTitle: url.deletingPathExtension().lastPathComponent)
+            return
         }
 
         let locale = try await prepareLocale(resolveLocale(options))
@@ -220,12 +297,34 @@ struct TranscribeCommand {
             await builder.add(segment)
             printLive(segment)
         }
+        try saveIfRequested(await builder.transcript, defaultTitle: url.deletingPathExtension().lastPathComponent)
+    }
 
-        let transcript = await builder.transcript
-        if let out = options.value("--out"), !options.has("--no-save") {
-            try save(transcript, title: options.value("--title") ?? url.deletingPathExtension().lastPathComponent,
-                     to: URL(fileURLWithPath: (out as NSString).expandingTildeInPath))
+    private func saveIfRequested(_ transcript: Transcript, defaultTitle: String) throws {
+        guard let out = options.value("--out"), !options.has("--no-save") else { return }
+        try save(transcript, title: options.value("--title") ?? defaultTitle,
+                 to: URL(fileURLWithPath: (out as NSString).expandingTildeInPath))
+    }
+
+    /// Re-runs Whisper over a session's retained audio and rewrites its transcript.
+    private func retranscribe(session: URL) async throws {
+        let manifestURL = session.appending(path: "\(SessionAudio.folderName)/\(SessionAudio.manifestName)")
+        guard let data = try? Data(contentsOf: manifestURL), let manifest = try? SessionAudio.load(jsonData: data) else {
+            throw UsageError("\(session.path) has no recorded audio. Record with --engine whisper --keep-audio to keep it.")
         }
+        let configuration = whisperConfiguration(options)
+        try preflightWhisper(configuration)
+
+        let audioFolder = session.appending(path: SessionAudio.folderName)
+        let streams = manifest.streams.map { RecordedStream(speaker: $0.speaker, wav: audioFolder.appending(path: $0.file), offset: $0.startOffset) }
+        let startedAt = (try? Transcript.load(jsonData: Data(contentsOf: session.appending(path: "transcript.json"))))?.startedAt ?? Date()
+        let transcript = try await runWhisperPass(streams, configuration: configuration, startedAt: startedAt)
+        guard !transcript.segments.isEmpty else {
+            fputs("Whisper found no speech in the recording.\n", stderr)
+            return
+        }
+        printSegments(transcript)
+        if !options.has("--no-save") { try save(transcript, title: options.value("--title"), to: session) }
     }
 }
 
@@ -263,6 +362,17 @@ struct DoctorCommand {
         @unknown default: "unknown"
         }
         print("\(mark(mic == .authorized || mic == .notDetermined)) Microphone: \(micText)")
+
+        // Whisper (optional second speech engine)
+        print("Whisper (optional engine for more languages):")
+        let whisperDefaults = WhisperConfiguration()
+        if let python = try? WhisperTranscriber(configuration: whisperDefaults).resolvePython() {
+            print("  ✓ mlx-whisper found (\(python))")
+            let cached = WhisperTranscriber.isModelCached(whisperDefaults.model)
+            print("  \(cached ? "✓" : "•") \(whisperDefaults.model): \(cached ? "downloaded" : "not downloaded yet (about 3 GB on first use)")")
+        } else {
+            print("  • mlx-whisper not found. To enable: python3 -m pip install mlx-whisper")
+        }
 
         // Reminders and Calendar (status only; never prompts)
         for (kind, name) in [(ProposedAction.Kind.reminder, "Reminders"), (.event, "Calendar")] {

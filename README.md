@@ -84,6 +84,73 @@ Safari plays audio through a per-app WebKit process named after the app
 ("Safari Graphics and Media"), so `--app safari` should find it; run `muesli apps`
 during your call to check what your app is called.
 
+## Speech engines
+
+muesli has two speech engines. Use Apple's by default, and Whisper when you need it.
+
+| | Apple (`--engine apple`, default) | Whisper (`--engine whisper`) |
+|---|---|---|
+| Languages | 25 on macOS 27 (no Arabic, Russian, Turkish, Dutch, Thai, Vietnamese, Hebrew, Polish) | 99, detected automatically |
+| Live text while recording | yes | no: it transcribes after you stop |
+| Speed (M1 Max) | about 50–60× real time | about 3–7× real time |
+| Needs | nothing | `python3 -m pip install mlx-whisper` and a one-time ~3 GB model download |
+| Runs on | Mac, iPhone (Watch audio goes to the iPhone) | Mac only, for now |
+
+`--engine apple+whisper` gives you the live Apple text as a draft, then replaces it
+with Whisper's as the final transcript (the draft is kept as `transcript.apple.json`).
+
+```sh
+muesli record --engine whisper                       # 99 languages, detected per stream
+muesli record --engine apple+whisper --keep-audio    # live draft, Whisper as final text
+muesli transcribe call.m4a --engine whisper --whisper-language ar
+muesli transcribe ~/Muesli/2026-09-25-1430           # re-run Whisper on a kept recording
+muesli doctor                                        # is mlx-whisper installed? model downloaded?
+```
+
+**Why not just Whisper everywhere?** Both were measured on an M1 Max MacBook Pro (8.6 minutes of
+English read speech, plus noisy and phone-band-limited copies; word error rate,
+lower is better):
+
+| | Whisper, stock settings | Whisper, muesli's pipeline | Apple |
+|---|---|---|---|
+| Clean speech | 5.0% | 3.5% | 3.5% |
+| Background noise (≈10 dB SNR) | 15.4% | 5.6% | 6.0% |
+| Phone-call quality | 12.4% (101 extra words) | 3.7% | 4.4% |
+
+Stock Whisper is unsafe for meetings: it wrote "you you" for a minute of silence,
+"Thank you. Thank you." for quiet noise, and looped on phone audio. muesli's
+pipeline fixes that, and then it's about as accurate as Apple's engine, not clearly
+better. **Treat differences under about a point as noise:** this is one run on
+English audiobook speech with synthetic degradation, not real meetings, accents,
+crosstalk or non-English speech. The pipeline:
+
+1. **Speech gate:** only stretches that contain speech are sent to Whisper. muesli
+   records the mic and system audio as separate streams and each is silent whenever
+   the other side talks, so this matters. It's an energy gate, not a neural VAD:
+   steady noise and silence are kept out, but music or crosstalk are not.
+2. **`condition_on_previous_text` off:** the setting behind the looping.
+3. **A quality filter** drops segments Whisper itself flags as non-speech.
+
+**A hazard with Apple's engine:** for a language it doesn't support, it doesn't
+refuse; with the wrong locale it can return confident phonetic gibberish (Arabic
+speech came back as garbled English). If your meetings aren't in a language Apple
+lists, use `--engine whisper`.
+
+**Audio retention.** Whisper works from the recording, so `--engine whisper` and
+`apple+whisper` save each stream as a 16 kHz mono WAV under `<session>/audio/`
+(about 115 MB per hour per stream). It is deleted once Whisper succeeds unless you
+pass `--keep-audio`, and it's kept, with the command to retry, if Whisper fails.
+
+**Limits.** Each stretch of speech costs a full 30-second Whisper window, which is
+why this runs at 3–7× real time rather than the ~17× stock Whisper reaches, so an
+hour-long call can take 10–20 minutes. The recording and Whisper flows were tested
+on files; recording *live* with `--engine whisper` was only confirmed for the
+no-audio path, since the Mac's audio output was unavailable during testing.
+
+Set `MUESLI_PYTHON` to the interpreter that has mlx-whisper if muesli can't find it,
+and `--whisper-model` to try another model (for example
+`mlx-community/whisper-large-v3-turbo`, not yet measured).
+
 ## Summaries
 
 Pick where the summary is generated with `--backend`:
@@ -185,9 +252,9 @@ where you stand.
 
 | Target | What it does | Platforms |
 |---|---|---|
-| `MuesliCore` | Transcript and notes models, notes schema, prompts, chunking + merge, date validation, the review plan and ledger, `mailto:` drafts, markdown rendering | any Apple platform |
-| `MuesliAudio` | Mic capture, system-audio tap (all, or chosen apps, followed live), file source | macOS |
-| `MuesliTranscribe` | `SpeechAnalyzer` wrapper, model download, stream → segments | macOS 26+ |
+| `MuesliCore` | Transcript and notes models, notes schema, prompts, chunking + merge, date validation, the review plan and ledger, `mailto:` drafts, the speech gate, markdown rendering | any Apple platform |
+| `MuesliAudio` | Mic capture, system-audio tap (all, or chosen apps, followed live), file source, 16 kHz WAV recorder | macOS |
+| `MuesliTranscribe` | Apple `SpeechAnalyzer` wrapper (live) and the Whisper engine (via mlx-whisper) | macOS 26+ |
 | `MuesliSummarize` | Backends: Apple Foundation Models, Claude (raw HTTP), OpenAI-compatible | macOS 26+ |
 | `MuesliActions` | Reminders and Calendar via EventKit: create, and undo | macOS 26+, iOS |
 | `muesli` | The CLI | macOS |
@@ -224,7 +291,10 @@ backend tests use a mock HTTP server and make no network calls.
       audio goes to the iPhone for transcription)
 - [ ] Fill email recipients from Contacts; warn about calendar conflicts
 - [x] Capture chosen apps only (`--app` / `--exclude-app`) instead of all system audio
-- [ ] Echo de-duplication between *Me* and *Them*; optional Whisper/Parakeet backend
+- [x] Whisper as a second speech engine (99 languages), gated and safeguarded
+- [ ] Pack speech stretches into shared Whisper windows for speed; try
+      `large-v3-turbo`; whisper.cpp / WhisperKit so it can run on iPhone; a neural VAD
+- [ ] Echo de-duplication between *Me* and *Them*
 - [ ] Split the notes request into smaller ones so Apple's small on-device context
       window can be used on long meetings
 
