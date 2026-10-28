@@ -1,5 +1,4 @@
 import AppKit
-import EventKit
 import Foundation
 import MuesliAudio
 import MuesliCore
@@ -48,12 +47,19 @@ final class AppModel {
     /// Something is playing but "Them" is digital silence: almost always the permission.
     private(set) var systemAudioSilent = false
     private(set) var recordingNotes: [String] = []
+    /// When the transcript in `segments` began. Unlike `startedAt` it outlives
+    /// the recording, so the last transcript can still be copied and asked about.
+    private(set) var transcriptStartedAt: Date?
+    let ask = AskModel()
+    /// Briefly true after Copy All, for the button's "Copied" confirmation.
+    private(set) var transcriptCopied = false
 
     // Menu data
     var source: SystemSource = .everything
     private(set) var playingApps: [String] = []
+    private(set) var microphones: [InputDevice] = []
+    private(set) var defaultMicrophone: InputDevice?
     private(set) var recent: [RecentSession] = []
-    private(set) var upcoming: UpcomingMeeting?
     private(set) var supportedLocales: [Locale] = []
     private(set) var whisperAvailable = false
 
@@ -85,6 +91,9 @@ final class AppModel {
             }
         }
         Task { await loadCapabilities() }
+        // Ask for the microphone now, not halfway into the first meeting. macOS
+        // only shows the prompt once; after that this just reads the answer.
+        Task { _ = await MicrophoneCapture.requestAccess() }
     }
 
     // MARK: Menu data
@@ -94,9 +103,10 @@ final class AppModel {
     func refreshMenuData(includingRecent: Bool = true) {
         if phase == .idle {
             playingApps = Set(AudioProcesses.list().filter(\.isProducingAudio).map(Self.appName)).sorted()
+            microphones = InputDevices.list()
+            defaultMicrophone = InputDevices.systemDefault()
         }
         if includingRecent { recent = SessionFolder.recent(in: preferences.outputRoot, limit: 8).map(RecentSession.init) }
-        upcoming = preferences.suggestFromCalendar ? UpcomingMeeting.next() : nil
     }
 
     /// "Google Chrome Helper (Renderer)" → "Google Chrome"; helpers are captured with their app anyway.
@@ -126,22 +136,40 @@ final class AppModel {
         case .app(let name): name
         case .none: nil
         }
-        return [preferences.useMicrophone ? "Mic" : nil, them].compactMap { $0 }.joined(separator: " + ")
+        return [preferences.useMicrophone ? microphoneName : nil, them].compactMap { $0 }.joined(separator: " + ")
     }
+
+    /// The chosen microphone if it's connected. One that isn't falls back to the
+    /// system default, rather than refusing to record.
+    var chosenMicrophone: InputDevice? {
+        preferences.microphoneUID.flatMap { uid in microphones.first { $0.uid == uid } }
+    }
+
+    /// The device "Me" will be recorded from.
+    var microphoneName: String { (chosenMicrophone ?? defaultMicrophone)?.name ?? "Mic" }
 
     func start(title: String? = nil) {
         guard canStart else { return }
         let prefs = preferences
         self.title = title
         segments = []
+        transcriptStartedAt = nil
+        ask.clear()
         levels = [:]
         captureNote = nil
         systemAudioSilent = false
         recordingNotes = []
         phase = .starting("Getting ready…")
 
+        // A microphone may have been plugged in or out since the menu last looked.
+        microphones = InputDevices.list()
+        defaultMicrophone = InputDevices.systemDefault()
         var options = RecordingOptions()
         options.microphone = prefs.useMicrophone
+        options.microphoneDevice = chosenMicrophone?.uid
+        if prefs.useMicrophone, prefs.microphoneUID != nil, chosenMicrophone == nil {
+            recordingNotes.append("The chosen microphone isn't connected, so \(microphoneName) is used.")
+        }
         options.systemAudio = source != .none
         switch source {
         case .everything:
@@ -190,6 +218,7 @@ final class AppModel {
                 return
             }
             startedAt = Date()
+            transcriptStartedAt = startedAt
             phase = .recording
             chime(.start)
             ticker = Task { // cancelled by stop() and discard()
@@ -285,8 +314,49 @@ final class AppModel {
             events?.finish()
             phase = .idle
             startedAt = nil
+            transcriptStartedAt = nil
             segments = []
+            ask.clear()
         }
+    }
+
+    // MARK: Live transcript
+
+    /// The transcript so far (or of the last recording), as the saved file would have it.
+    var liveTranscript: Transcript? {
+        guard let transcriptStartedAt, !segments.isEmpty else { return nil }
+        return Transcript(startedAt: transcriptStartedAt, locale: preferences.locale.identifier, segments: segments)
+    }
+
+    /// Everything said so far, with timestamps and times of day, like transcript.md.
+    func copyTranscript() {
+        guard let transcript = liveTranscript else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(transcript.markdown(title: title), forType: .string)
+        transcriptCopied = true
+        Task {
+            try? await Task.sleep(for: .seconds(1.5))
+            transcriptCopied = false
+        }
+    }
+
+    /// Answers stay on this Mac unless Private Cloud Compute is already the
+    /// chosen summarizer: a question is never sent anywhere summaries aren't.
+    var askKind: AppleGenerator.Kind { preferences.backend == .appleCloud ? .privateCloud : .onDevice }
+
+    /// Why questions can't be asked right now, if the model is the reason.
+    var askProblem: String? { AppleGenerator.unavailableReason(askKind) }
+
+    var canAsk: Bool { transcriptStartedAt != nil && !segments.isEmpty && askProblem == nil }
+
+    func askQuestion(_ question: String) {
+        guard let transcript = liveTranscript else { return }
+        ask.ask(question, transcript: transcript, kind: askKind)
+    }
+
+    func retryQuestion(_ exchange: AskModel.Exchange) {
+        guard let transcript = liveTranscript else { return }
+        ask.retry(exchange, transcript: transcript, kind: askKind)
     }
 
     // MARK: Sounds
@@ -326,11 +396,11 @@ final class AppModel {
         do {
             let result = try await MuesliSession.summarize(transcript, generator: generator, title: title, saveTo: folder)
             let notes = result.notes
-            let count = notes.actionItems.count + notes.events.count + notes.emailDrafts.count
+            let count = notes.emailDrafts.count
             if notes.hasProposals { awaitingReview.insert(folder.url) }
             notifier.post(
                 title: "Notes ready: \(notes.title)",
-                body: count == 0 ? notes.summary : "\(count) item\(count == 1 ? "" : "s") to review: reminders, events and drafts.",
+                body: count == 0 ? notes.summary : "\(count) email draft\(count == 1 ? "" : "s") to review.",
                 session: folder.url, review: notes.hasProposals)
         } catch {
             notifier.post(title: "Summarizing failed", body: "\(error.localizedDescription) The transcript is saved; use Summarize Now to retry.",
@@ -359,30 +429,6 @@ final class AppModel {
         try? FileManager.default.createDirectory(at: preferences.outputRoot, withIntermediateDirectories: true)
         NSWorkspace.shared.open(preferences.outputRoot)
     }
-
-    func undoActions(_ url: URL) {
-        let runner = ActionRunner(folder: SessionFolder(url))
-        let items = runner.undoable()
-        guard !items.isEmpty else { return }
-        let alert = NSAlert()
-        alert.messageText = "Remove what Muesli added?"
-        alert.informativeText = items.map { "• \($0.title)" }.joined(separator: "\n")
-        alert.addButton(withTitle: "Remove \(items.count)")
-        alert.addButton(withTitle: "Cancel")
-        NSApp.activate()
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        Task {
-            do {
-                let outcomes = try await runner.undo()
-                let failed = outcomes.filter { $0.error != nil }
-                notifier.post(title: failed.isEmpty ? "Removed \(outcomes.count) item\(outcomes.count == 1 ? "" : "s")" : "Some items couldn't be removed",
-                              body: failed.map { "\($0.title): \($0.error ?? "")" }.joined(separator: "\n"))
-            } catch {
-                notifier.post(title: "Couldn't undo", body: error.localizedDescription)
-            }
-            refreshMenuData()
-        }
-    }
 }
 
 /// One row of Recent Meetings.
@@ -392,7 +438,6 @@ struct RecentSession: Identifiable, Hashable {
     let started: Date?
     let hasNotes: Bool
     let hasProposals: Bool
-    let canUndo: Bool
     var id: URL { url }
 
     init(_ folder: SessionFolder) {
@@ -402,7 +447,6 @@ struct RecentSession: Identifiable, Hashable {
         let notes = try? folder.loadNotes()
         hasNotes = notes != nil
         hasProposals = notes?.hasProposals ?? false
-        canUndo = !ActionRunner(folder: folder).undoable().isEmpty
     }
 
     var menuTitle: String {

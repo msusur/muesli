@@ -29,10 +29,6 @@
 	<string>Muesli records your microphone so it can transcribe your side of a conversation. Audio is processed on-device.</string>
 	<key>NSAudioCaptureUsageDescription</key>
 	<string>Muesli records system audio so it can transcribe the other participants in a call or meeting. Audio is processed on-device.</string>
-	<key>NSRemindersFullAccessUsageDescription</key>
-	<string>Muesli adds the action items from your meetings to Reminders, only after you approve them.</string>
-	<key>NSCalendarsFullAccessUsageDescription</key>
-	<string>Muesli adds events agreed in your meetings to Calendar, only after you approve them, can remove what it added, and can name a recording after the meeting you're in.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Muesli transcribes audio on-device using Apple's speech recognition.</string>
 </dict>

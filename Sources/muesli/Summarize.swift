@@ -70,7 +70,7 @@ func summarizeAndSave(
     guard let folder else { return }
     fputs("Saved → \(folder.file("notes.md").path)\n", stderr)
     if result.notes.hasProposals {
-        fputs("Next: review and add them to Reminders, Calendar and Mail with\n  muesli actions \"\(folder.url.path)\"\n", stderr)
+        fputs("Next: review the email drafts and open them in your mail app with\n  muesli actions \"\(folder.url.path)\"\n", stderr)
     }
 }
 

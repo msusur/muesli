@@ -39,5 +39,5 @@ public func summarize(
 
 extension MeetingNotes {
     /// Whether there's anything `muesli actions` could add.
-    public var hasProposals: Bool { !actionItems.isEmpty || !events.isEmpty || !emailDrafts.isEmpty }
+    public var hasProposals: Bool { !emailDrafts.isEmpty }
 }

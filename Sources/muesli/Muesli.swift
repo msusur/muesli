@@ -33,8 +33,6 @@ struct Muesli {
             AppsCommand(try Options(rest)).run()
         case "actions":
             try await ActionsCommand(Options(rest)).run()
-        case "undo":
-            try await UndoCommand(Options(rest)).run()
         case "doctor":
             await DoctorCommand().run()
         case "-h", "--help", "help":
@@ -58,10 +56,8 @@ USAGE
   muesli transcribe <audio-file>   Transcribe an existing audio file.
   muesli summarize <transcript>    Turn a transcript.json (or its folder) into notes:
                                    summary, decisions, action items, events, email drafts.
-  muesli actions <session>         Review the notes' action items, events and email drafts,
-                                   then add the ones you approve to Reminders, Calendar
-                                   and your mail app. Nothing is created without your OK.
-  muesli undo <session>            Remove the reminders and events muesli added.
+  muesli actions <session>         Review the notes' email drafts, then open the ones you
+                                   approve in your mail app. Nothing is ever sent.
   muesli apps                      List apps that are playing audio (for --app).
   muesli doctor                    Check permissions, speech models and summarizers.
 
@@ -106,13 +102,10 @@ SUMMARIZE (also used by `record --summarize`)
   --no-fallback       anthropic: don't retry refusals on Anthropic's fallback model
 
 ACTIONS
-  --dry-run           Show what would be proposed; create nothing
-  --yes               Apply the pre-checked items without asking (use in scripts)
-  --all               Apply every proposed item without asking
-  --only <kinds>      reminders, events, emails (comma-separated)
-  --reminders-list N  Reminders list to use (default: your default list)
-  --calendar NAME     Calendar to use (default: your default calendar)
-  --force             Propose items even if they were added before
+  --dry-run           Show what would be proposed; open nothing
+  --yes               Open the pre-checked drafts without asking (use in scripts)
+  --all               Open every proposed draft without asking
+  --force             Propose drafts even if they were opened before
 
 Transcripts only leave your Mac if you choose anthropic, apple-cloud or a remote openai server.
 """
@@ -131,7 +124,7 @@ struct Options {
     private static let valueFlags: Set<String> = [
         "--locale", "--out", "--title", "--duration", "--speaker",
         "--backend", "--model", "--base-url", "--context-tokens", "--api-key-env", "--notes",
-        "--only", "--reminders-list", "--calendar", "--app", "--exclude-app",
+        "--app", "--exclude-app",
         "--engine", "--whisper-model", "--whisper-language",
     ]
 

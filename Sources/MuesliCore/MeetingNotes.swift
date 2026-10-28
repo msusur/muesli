@@ -35,7 +35,7 @@ public struct TokenUsage: Codable, Sendable, Equatable {
     }
 }
 
-/// Validated notes, ready to show and to hand to Reminders / Calendar / Mail.
+/// Validated notes, ready to show and to turn into mail drafts.
 public struct MeetingNotes: Codable, Sendable, Equatable {
     public var title: String
     public var summary: String

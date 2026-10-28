@@ -15,14 +15,14 @@ final class Preferences {
     /// `nil` follows the system language.
     var localeIdentifier: String? { didSet { defaults.set(localeIdentifier, forKey: "locale") } }
     var useMicrophone: Bool { didSet { defaults.set(useMicrophone, forKey: "useMicrophone") } }
+    /// The chosen microphone's Core Audio UID; `nil` follows the system's default input.
+    var microphoneUID: String? { didSet { defaults.set(microphoneUID, forKey: "microphoneUID") } }
     /// Apps never captured when recording all system audio, comma-separated (e.g. "Music, Spotify").
     var excludedApps: String { didSet { defaults.set(excludedApps, forKey: "excludedApps") } }
     var outputFolder: String { didSet { defaults.set(outputFolder, forKey: "outputFolder") } }
     var summarizeOnStop: Bool { didSet { defaults.set(summarizeOnStop, forKey: "summarizeOnStop") } }
     /// A soft sound when recording starts and stops.
     var playSounds: Bool { didSet { defaults.set(playSounds, forKey: "playSounds") } }
-    /// Offer "Record “<meeting>”" from Calendar, and use it as the title.
-    var suggestFromCalendar: Bool { didSet { defaults.set(suggestFromCalendar, forKey: "suggestFromCalendar") } }
 
     // Summaries
     var backend: Backend { didSet { defaults.set(backend.rawValue, forKey: "backend") } }
@@ -36,10 +36,6 @@ final class Preferences {
     /// Empty finds Python automatically.
     var pythonPath: String { didSet { defaults.set(pythonPath, forKey: "pythonPath") } }
 
-    // Actions
-    var remindersList: String { didSet { defaults.set(remindersList, forKey: "remindersList") } }
-    var calendarName: String { didSet { defaults.set(calendarName, forKey: "calendarName") } }
-
     // Keys, mirrored from the Keychain so views can observe whether one is set.
     var anthropicKey: String { didSet { Keychain.set(anthropicKey, for: .anthropic) } }
     var openAIKey: String { didSet { Keychain.set(openAIKey, for: .openAI) } }
@@ -49,11 +45,11 @@ final class Preferences {
         engine = d.string(forKey: "engine").flatMap(Engine.init(rawValue:)) ?? .apple
         localeIdentifier = d.string(forKey: "locale")
         useMicrophone = d.object(forKey: "useMicrophone") as? Bool ?? true
+        microphoneUID = d.string(forKey: "microphoneUID")
         excludedApps = d.string(forKey: "excludedApps") ?? ""
         outputFolder = d.string(forKey: "outputFolder") ?? SessionFolder.defaultRoot.path
         summarizeOnStop = d.object(forKey: "summarizeOnStop") as? Bool ?? true
         playSounds = d.object(forKey: "playSounds") as? Bool ?? true
-        suggestFromCalendar = d.bool(forKey: "suggestFromCalendar")
         backend = d.string(forKey: "backend").flatMap(Backend.init(rawValue:)) ?? Backend.automatic() ?? .apple
         anthropicModel = d.string(forKey: "anthropicModel") ?? AnthropicGenerator.defaultModel
         openAIBaseURL = d.string(forKey: "openAIBaseURL") ?? "http://localhost:11434/v1"
@@ -61,8 +57,6 @@ final class Preferences {
         openAIContextTokens = d.object(forKey: "openAIContextTokens") as? Int ?? 8192
         whisperModel = d.string(forKey: "whisperModel") ?? "mlx-community/whisper-large-v3-mlx"
         pythonPath = d.string(forKey: "pythonPath") ?? ""
-        remindersList = d.string(forKey: "remindersList") ?? ""
-        calendarName = d.string(forKey: "calendarName") ?? ""
         anthropicKey = Keychain.get(.anthropic) ?? ""
         openAIKey = Keychain.get(.openAI) ?? ""
     }

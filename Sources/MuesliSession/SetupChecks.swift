@@ -1,6 +1,5 @@
 import AVFoundation
 import Foundation
-import MuesliActions
 import MuesliAudio
 import MuesliCore
 import MuesliSummarize
@@ -38,8 +37,6 @@ public enum SetupChecks {
     public enum Pane: String {
         case microphone = "Privacy_Microphone"
         case systemAudio = "Privacy_AudioCapture"
-        case reminders = "Privacy_Reminders"
-        case calendars = "Privacy_Calendars"
 
         public var url: URL { URL(string: "x-apple.systempreferences:com.apple.preference.security?\(rawValue)")! }
     }
@@ -76,7 +73,7 @@ public enum SetupChecks {
         let mic = AVCaptureDevice.authorizationStatus(for: .audio)
         switch mic {
         case .authorized: add(.permissions, "Microphone", "granted", .ok)
-        case .notDetermined: add(.permissions, "Microphone", "not asked yet (you'll be asked when you first record)", .info)
+        case .notDetermined: add(.permissions, "Microphone", "not asked yet (you'll be asked before your first recording)", .info)
         case .denied: add(.permissions, "Microphone", "denied. Allow \(grantee) in System Settings → Privacy & Security → Microphone", .problem, .microphone)
         case .restricted: add(.permissions, "Microphone", "restricted by policy", .problem)
         @unknown default: add(.permissions, "Microphone", "unknown", .info)
@@ -86,17 +83,6 @@ public enum SetupChecks {
         add(.permissions, "System Audio Recording",
             "can't be checked ahead of time. If “Them” stays silent while a call is playing, allow \(grantee) in System Settings → Privacy & Security → Screen & System Audio Recording",
             .info, .systemAudio)
-
-        // Reminders and Calendar (status only; never prompts)
-        for (kind, name, pane) in [(ProposedAction.Kind.reminder, "Reminders", Pane.reminders), (.event, "Calendar", .calendars)] {
-            switch EventKitApplier.access(for: kind) {
-            case .granted: add(.permissions, name, "granted", .ok)
-            case .notDetermined: add(.permissions, name, "not asked yet (you'll be asked the first time you add items)", .info)
-            case .denied: add(.permissions, name, "denied. Allow \(grantee) in System Settings → Privacy & Security → \(name == "Calendar" ? "Calendars" : name)", .problem, pane)
-            case .restricted: add(.permissions, name, "restricted by policy", .problem)
-            case .writeOnly: add(.permissions, name, "write-only (muesli needs full access to pick a list and undo)", .problem, pane)
-            }
-        }
 
         // Whisper
         if let python = try? WhisperTranscriber(configuration: whisper).resolvePython() {

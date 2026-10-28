@@ -24,11 +24,10 @@ lib MuesliCore
 lib MuesliAudio
 lib MuesliTranscribe
 lib MuesliSummarize
-lib MuesliActions
 lib MuesliSession
 
 swiftc "${FLAGS[@]}" -module-name muesli -o "$OUT/muesli" Sources/muesli/*.swift \
-  "$OUT"/libMuesli{Session,Actions,Summarize,Transcribe,Audio,Core}.a \
+  "$OUT"/libMuesli{Session,Summarize,Transcribe,Audio,Core}.a \
   -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist -Xlinker Sources/muesli/Info.plist
 
 echo "built $OUT/muesli"

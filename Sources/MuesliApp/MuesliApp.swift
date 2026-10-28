@@ -69,14 +69,12 @@ struct MenuContent: View {
     // MARK: Idle
 
     @ViewBuilder private var idle: some View {
-        if let meeting = model.upcoming {
-            Button("Record “\(meeting.title)”") { model.start(title: meeting.title) }
-                .disabled(!model.canStart)
-            Text("    \(meeting.when)")
-        }
         Button("Start Recording") { model.start() }
             .keyboardShortcut("r")
             .disabled(!model.canStart)
+        if !model.segments.isEmpty {
+            Button("Show Last Transcript") { model.showLiveTranscript() }
+        }
         Menu("Record From") {
             Picker("System Audio", selection: Bindable(model).source) {
                 Text("All System Audio").tag(SystemSource.everything)
@@ -86,12 +84,39 @@ struct MenuContent: View {
                 Text("No System Audio").tag(SystemSource.none)
             }
             .pickerStyle(.inline)
-            Divider()
-            Toggle("Microphone", isOn: $preferences.useMicrophone)
+        }
+        Menu(preferences.useMicrophone ? "Microphone: \(model.microphoneName)" : "Microphone: Off") {
+            Picker("Microphone", selection: microphone) {
+                Text("System Default (\(model.defaultMicrophone?.name ?? "none"))").tag(MicrophoneChoice.systemDefault)
+                ForEach(model.microphones) { Text($0.name).tag(MicrophoneChoice.device($0.uid)) }
+                if let uid = preferences.microphoneUID, model.chosenMicrophone == nil {
+                    Text("Chosen Microphone (not connected)").tag(MicrophoneChoice.device(uid))
+                }
+                Text("Don't Record the Microphone").tag(MicrophoneChoice.off)
+            }
+            .pickerStyle(.inline)
         }
         if !model.awaitingReview.isEmpty {
             ForEach(model.recent.filter { model.awaitingReview.contains($0.url) }) { session in
                 Button("Review “\(session.title)”…") { model.openReview(session.url) }
+            }
+        }
+    }
+
+    private enum MicrophoneChoice: Hashable {
+        case systemDefault, device(String), off
+    }
+
+    /// One picker over two settings: whether to record the mic, and which one.
+    private var microphone: Binding<MicrophoneChoice> {
+        Binding {
+            guard preferences.useMicrophone else { return .off }
+            return preferences.microphoneUID.map(MicrophoneChoice.device) ?? .systemDefault
+        } set: { choice in
+            switch choice {
+            case .off: preferences.useMicrophone = false
+            case .systemDefault: preferences.useMicrophone = true; preferences.microphoneUID = nil
+            case .device(let uid): preferences.useMicrophone = true; preferences.microphoneUID = uid
             }
         }
     }
@@ -129,11 +154,10 @@ struct MenuContent: View {
             ForEach(model.recent) { session in
                 Menu(session.menuTitle) {
                     Button(session.hasNotes ? "Open Notes" : "Open Transcript") { model.openNotes(session.url) }
-                    if session.hasProposals { Button("Review Actions…") { model.openReview(session.url) } }
+                    if session.hasProposals { Button("Review Email Drafts…") { model.openReview(session.url) } }
                     if !session.hasNotes {
                         Button("Summarize Now") { model.summarizeNow(session.url) }.disabled(model.phase.isBusy)
                     }
-                    if session.canUndo { Button("Undo Added Items…") { model.undoActions(session.url) } }
                     Divider()
                     Button("Show in Finder") { model.reveal(session.url) }
                 }

@@ -7,6 +7,8 @@ import MuesliTranscribe
 public struct RecordingOptions: Sendable {
     /// Capture the microphone ("Me").
     public var microphone = true
+    /// Which microphone, by Core Audio UID; `nil` uses the system's default input.
+    public var microphoneDevice: String?
     /// Capture what the Mac plays ("Them").
     public var systemAudio = true
     /// Which apps' audio counts as "Them".
@@ -118,7 +120,7 @@ public actor RecordingSession {
         sessionStart = HostClock.now()
         transcript = Transcript(startedAt: Date(), locale: locale.identifier)
 
-        let mic = MicrophoneCapture()
+        let mic = MicrophoneCapture(deviceUID: options.microphoneDevice)
         let system = SystemAudioCapture(scope: options.scope)
         let onEvent = onEvent
         system.onUpdate = { onEvent(.systemAudio($0)) }

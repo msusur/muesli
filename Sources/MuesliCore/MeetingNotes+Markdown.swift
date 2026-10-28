@@ -34,7 +34,7 @@ extension MeetingNotes {
         }
 
         if !events.isEmpty {
-            out += "## Calendar\n"
+            out += "## Meetings agreed\n"
             for e in events {
                 var line = "- \(e.title)"
                 if let start = e.start { line += " — \(start.replacingOccurrences(of: "T", with: " "))" }

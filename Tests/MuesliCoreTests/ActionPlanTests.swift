@@ -16,92 +16,6 @@ private func notes(_ g: GeneratedNotes, title: String = "Launch sync") -> Meetin
     return MeetingNotes(normalizing: g, context: MeetingContext(start: meetingStart(), timeZone: london), generatedBy: "test")
 }
 
-private func utc(_ iso: String) -> Date {
-    ISO8601DateFormatter().date(from: iso)!
-}
-
-// MARK: - Reminders
-
-@Suite("Action plan: reminders")
-struct ReminderPlanTests {
-    @Test("your own tasks are selected; other people's become 'waiting on' reminders, unselected")
-    func ownership() throws {
-        let plan = ActionPlan(notes: notes(.init(actionItems: [
-            .init(title: "Send the budget", owner: "Me", dueDate: "2026-09-28", dueText: "by Monday", context: "Finance needs it."),
-            .init(title: "Review the contract", owner: "Sarah"),
-            .init(title: "Ping legal", owner: ""),
-        ])))
-        let r = plan.actions.filter { $0.kind == .reminder }
-        #expect(r.map(\.selectedByDefault) == [true, false, true])
-        #expect(r[1].title == "Waiting on Sarah: Review the contract")
-
-        guard case .reminder(let req) = r[0].payload else { Issue.record("not a reminder"); return }
-        #expect(req.title == "Send the budget")
-        #expect(req.due == DateComponents(year: 2026, month: 9, day: 28))
-        #expect(req.notes.contains("Finance needs it."))
-        #expect(req.notes.contains("Said: “by Monday”"))
-        #expect(req.notes.contains("From “Launch sync” (Fri 25 Sep 2026), created by muesli."))
-        #expect(r[0].detail == "due Mon 28 Sep · Me")
-    }
-
-    @Test("an unresolved date is explained, not silently dropped")
-    func noDate() throws {
-        let plan = ActionPlan(notes: notes(.init(actionItems: [.init(title: "Follow up", owner: "Me", dueDate: "2026-02-31", dueText: "soon")])))
-        let action = try #require(plan.actions.first)
-        guard case .reminder(let req) = action.payload else { Issue.record("not a reminder"); return }
-        #expect(req.due == nil)
-        #expect(action.detail == "no date resolved (“soon”) · Me")
-        #expect(req.notes.contains("Said: “soon”"))
-    }
-}
-
-// MARK: - Events
-
-@Suite("Action plan: events")
-struct EventPlanTests {
-    private func event(_ g: GeneratedNotes.Event) throws -> (ProposedAction, EventRequest) {
-        let plan = ActionPlan(notes: notes(.init(events: [g])))
-        let action = try #require(plan.actions.first { $0.kind == .event })
-        guard case .event(let req) = action.payload else { throw CancellationError() }
-        return (action, req)
-    }
-
-    @Test("a timed event lands at the right instant in the meeting's time zone (BST)")
-    func timedBST() throws {
-        let (action, req) = try event(.init(title: "Vendor call", start: "2026-10-02T15:00", attendees: ["Bob"]))
-        #expect(!req.isAllDay)
-        #expect(req.start == utc("2026-10-02T14:00:00Z")) // 15:00 BST = 14:00Z
-        #expect(req.end == utc("2026-10-02T14:30:00Z")) // 30 minutes when unspecified
-        #expect(req.timeZone == london)
-        #expect(req.notes.contains("With: Bob"))
-        #expect(action.detail == "Fri 2 Oct, 15:00–15:30 · with Bob")
-    }
-
-    @Test("across the clock change the same wall time maps to a different UTC hour")
-    func timedGMT() throws {
-        let (_, req) = try event(.init(title: "After the change", start: "2026-10-26T15:00", durationMinutes: 45))
-        #expect(req.start == utc("2026-10-26T15:00:00Z")) // GMT again after 25 Oct
-        #expect(req.end == utc("2026-10-26T15:45:00Z"))
-    }
-
-    @Test("a date without a time becomes an all-day event")
-    func allDay() throws {
-        let (action, req) = try event(.init(title: "Offsite", start: "2026-10-03"))
-        #expect(req.isAllDay)
-        #expect(req.start == utc("2026-10-02T23:00:00Z")) // midnight 3 Oct in London
-        #expect(action.detail == "Sat 3 Oct (all day)")
-    }
-
-    @Test("an event with no start is skipped with a reason")
-    func skipped() {
-        let plan = ActionPlan(notes: notes(.init(events: [.init(title: "Sometime", start: "")])))
-        #expect(plan.actions.isEmpty)
-        #expect(plan.skipped.count == 1)
-        #expect(plan.skipped[0].title == "Sometime")
-        #expect(plan.skipped[0].reason.contains("no date or time"))
-    }
-}
-
 // MARK: - Emails
 
 @Suite("Action plan: emails")
@@ -130,19 +44,22 @@ struct LedgerTests {
     private let generated = GeneratedNotes(
         actionItems: [.init(title: "Send the budget", owner: "Me", dueDate: "2026-09-28")],
         events: [.init(title: "Vendor call", start: "2026-10-02T15:00")],
-        emailDrafts: [.init(to: [], subject: "Delay", body: "Hi all")]
+        emailDrafts: [
+            .init(to: [], subject: "Delay", body: "Hi all"),
+            .init(to: ["bob@vendor.com"], subject: "Budget", body: "Attached"),
+        ]
     )
 
     @Test("applied items drop out of the plan and move to alreadyApplied")
     func filters() {
         var ledger = AppliedLedger()
         let first = ActionPlan(notes: notes(generated))
-        #expect(first.actions.count == 3 && first.alreadyApplied.isEmpty)
+        #expect(first.actions.count == 2 && first.alreadyApplied.isEmpty)
 
-        ledger.record(first.actions[0], externalID: "REM-1")
+        ledger.record(first.actions[0], externalID: "")
         let second = ActionPlan(notes: notes(generated), ledger: ledger)
-        #expect(second.actions.count == 2)
-        #expect(second.alreadyApplied.map(\.title) == ["Send the budget"])
+        #expect(second.actions.map(\.title) == ["Budget"])
+        #expect(second.alreadyApplied.map(\.title) == ["Delay"])
     }
 
     @Test("re-summarizing (new item UUIDs) doesn't defeat the ledger")
@@ -157,13 +74,20 @@ struct LedgerTests {
         #expect(ActionPlan(notes: notes(generated), ledger: ledger).actions.isEmpty)
     }
 
-    @Test("keys ignore case and spacing but respect the date")
+    @Test("keys ignore case and spacing but respect the body")
     func keyNormalization() {
-        func key(_ title: String, _ due: String) -> String {
-            ActionPlan(notes: notes(.init(actionItems: [.init(title: title, dueDate: due)]))).actions[0].key
+        func key(_ subject: String, _ body: String) -> String {
+            ActionPlan(notes: notes(.init(emailDrafts: [.init(to: [], subject: subject, body: body)]))).actions[0].key
         }
-        #expect(key("Send  the BUDGET", "2026-09-28") == key("send the budget", "2026-09-28"))
-        #expect(key("Send the budget", "2026-09-28") != key("Send the budget", "2026-09-29"))
+        #expect(key("Budget  DELAY", "Hi all") == key("budget delay", "hi  all"))
+        #expect(key("Budget delay", "Hi all") != key("Budget delay", "Hello"))
+    }
+
+    @Test("action items and agreed meetings stay in the notes, but aren't proposed")
+    func onlyEmails() {
+        let plan = ActionPlan(notes: notes(generated))
+        #expect(plan.actions.allSatisfy { $0.kind == .email })
+        #expect(notes(generated).markdown().contains("## Meetings agreed\n- Vendor call"))
     }
 
     @Test("recording twice replaces; remove works; JSON round-trips")

@@ -196,7 +196,7 @@ public final class SystemAudioCapture: @unchecked Sendable {
 
         let aggregate: [String: Any] = [
             kAudioAggregateDeviceNameKey: "muesli tap",
-            kAudioAggregateDeviceUIDKey: UUID().uuidString,
+            kAudioAggregateDeviceUIDKey: Self.aggregateUIDPrefix + UUID().uuidString,
             kAudioAggregateDeviceMainSubDeviceKey: outputUID,
             kAudioAggregateDeviceIsPrivateKey: true,
             kAudioAggregateDeviceIsStackedKey: false,
@@ -288,6 +288,9 @@ public final class SystemAudioCapture: @unchecked Sendable {
         guard status == noErr else { throw CaptureError.tapFormat(status) }
         return asbd
     }
+
+    /// Marks the tap's aggregate devices, which Muesli itself can see, so they're never offered as a microphone.
+    static let aggregateUIDPrefix = "dev.muesli.tap."
 
     public static func defaultOutputDeviceUID() throws -> String {
         var address = AudioObjectPropertyAddress(

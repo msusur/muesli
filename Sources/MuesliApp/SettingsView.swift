@@ -17,7 +17,6 @@ struct SettingsView: View {
             GeneralSettings(model: model, preferences: preferences, login: login).tabItem { Label("General", systemImage: "gearshape") }
             SummarySettings(preferences: preferences, drafts: drafts).tabItem { Label("Summaries", systemImage: "text.badge.star") }
             SpeechSettings(model: model, preferences: preferences).tabItem { Label("Speech", systemImage: "waveform") }
-            ActionSettings(preferences: preferences).tabItem { Label("Actions", systemImage: "checklist") }
         }
         .padding(16)
         .frame(minWidth: 520, minHeight: 380)
@@ -42,14 +41,6 @@ private struct GeneralSettings: View {
                 .font(.caption).foregroundStyle(.secondary)
             Toggle("Summarize when a recording stops", isOn: $preferences.summarizeOnStop)
             Toggle("Play a soft sound when recording starts and stops", isOn: $preferences.playSounds)
-            Toggle("Suggest the current meeting from Calendar", isOn: $preferences.suggestFromCalendar)
-                .onChange(of: preferences.suggestFromCalendar) { _, on in
-                    guard on else { return }
-                    Task {
-                        if !(await UpcomingMeeting.requestAccess()) { preferences.suggestFromCalendar = false }
-                        model.refreshMenuData(includingRecent: false)
-                    }
-                }
             Toggle("Open Muesli at login", isOn: Binding(get: { login.enabled }, set: { login.set($0) }))
             if let error = login.error { Text(error).font(.caption).foregroundStyle(.red) }
         }
@@ -136,20 +127,6 @@ private struct SpeechSettings: View {
                 TextField("Model", text: $preferences.whisperModel)
                 TextField("Python", text: $preferences.pythonPath, prompt: Text("found automatically"))
             }
-        }
-        .formStyle(.grouped)
-    }
-}
-
-private struct ActionSettings: View {
-    @Bindable var preferences: Preferences
-
-    var body: some View {
-        Form {
-            TextField("Reminders list", text: $preferences.remindersList, prompt: Text("your default list"))
-            TextField("Calendar", text: $preferences.calendarName, prompt: Text("your default calendar"))
-            Text("Nothing is added until you press Add in the review window, and anything added can be undone from Recent Meetings.")
-                .font(.caption).foregroundStyle(.secondary)
         }
         .formStyle(.grouped)
     }

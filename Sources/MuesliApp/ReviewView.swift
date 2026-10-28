@@ -1,12 +1,12 @@
 import AppKit
-import MuesliActions
 import MuesliCore
 import MuesliSession
 import Observation
 import SwiftUI
 
-/// The post-meeting checklist: tick what to add to Reminders, Calendar and Mail.
-/// Nothing is created until "Add" is pressed. Replaces `muesli actions`' prompts.
+/// The post-meeting checklist: tick which email drafts to open in the mail app.
+/// Nothing is opened until "Open" is pressed, and nothing is ever sent.
+/// Replaces `muesli actions`' prompts.
 struct ReviewView: View {
     let model: AppModel
     let url: URL
@@ -21,15 +21,11 @@ struct ReviewView: View {
     private var notes: MeetingNotes? { state.notes }
     private var plan: ActionPlan? { state.plan }
     private var outcomes: [ActionRunner.Outcome] { state.outcomes }
-    private var undoable: Int { state.undoable }
     private var working: Bool { state.working }
     private var loadError: String? { state.loadError }
 
     private var runner: ActionRunner {
-        let prefs = model.preferences
-        return ActionRunner(folder: SessionFolder(url), configuration: .init(
-            remindersList: prefs.remindersList.isEmpty ? nil : prefs.remindersList,
-            calendar: prefs.calendarName.isEmpty ? nil : prefs.calendarName))
+        ActionRunner(folder: SessionFolder(url))
     }
 
     var body: some View {
@@ -59,7 +55,7 @@ struct ReviewView: View {
             if !outcomes.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
                     ForEach(outcomes) { outcome in
-                        Label(outcome.error.map { "\(outcome.action.title): \($0)" } ?? "Added “\(outcome.action.title)”",
+                        Label(outcome.error.map { "\(outcome.action.title): \($0)" } ?? "Opened “\(outcome.action.title)”",
                               systemImage: outcome.succeeded ? "checkmark.circle.fill" : "xmark.octagon.fill")
                             .foregroundStyle(outcome.succeeded ? Color.green : Color.red)
                     }
@@ -67,7 +63,7 @@ struct ReviewView: View {
             }
 
             if plan.actions.isEmpty {
-                Text("Nothing new to add.").foregroundStyle(.secondary)
+                Text("No email drafts to open.").foregroundStyle(.secondary)
             }
             ForEach(ProposedAction.Kind.allCases, id: \.self) { kind in
                 let actions = plan.actions.filter { $0.kind == kind }
@@ -90,18 +86,8 @@ struct ReviewView: View {
                 }
             }
 
-            if !plan.skipped.isEmpty {
-                DisclosureGroup("Not proposed (\(plan.skipped.count))") {
-                    VStack(alignment: .leading, spacing: 4) {
-                        ForEach(Array(plan.skipped.enumerated()), id: \.offset) { _, item in
-                            Text("\(item.title): \(item.reason)").font(.caption).foregroundStyle(.secondary)
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-            }
             if !plan.alreadyApplied.isEmpty {
-                Text("Already added earlier: \(plan.alreadyApplied.map(\.title).joined(separator: ", "))")
+                Text("Already opened earlier: \(plan.alreadyApplied.map(\.title).joined(separator: ", "))")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
@@ -111,15 +97,9 @@ struct ReviewView: View {
     private var footer: some View {
         HStack {
             Button("Open Notes") { model.openNotes(url) }
-            if undoable > 0 {
-                Button("Undo Added (\(undoable))…") {
-                    model.undoActions(url)
-                    Task { try? await Task.sleep(for: .seconds(1)); load(selectingDefaults: false) }
-                }
-            }
             Spacer()
             if working { ProgressView().controlSize(.small) }
-            Button("Add \(chosen.count) Selected") { apply() }
+            Button("Open \(chosen.count) Selected") { apply() }
                 .keyboardShortcut(.defaultAction)
                 .disabled(chosen.isEmpty || working)
         }
@@ -137,7 +117,6 @@ struct ReviewView: View {
             state.plan = plan
             state.notes = notes
             if selectingDefaults { state.selected = Set(plan.actions.filter(\.selectedByDefault).map(\.id)) }
-            state.undoable = runner.undoable().count
         } catch {
             state.loadError = error.localizedDescription
         }
@@ -164,7 +143,6 @@ final class ReviewState {
     var plan: ActionPlan?
     var selected: Set<UUID> = []
     var outcomes: [ActionRunner.Outcome] = []
-    var undoable = 0
     var working = false
     var loadError: String?
 }

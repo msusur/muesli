@@ -3,9 +3,16 @@ import MuesliCore
 import MuesliSession
 import SwiftUI
 
-/// The floating panel: what's being heard on each side, and the transcript as it forms.
+/// The floating panel: what's being heard on each side, the transcript as it
+/// forms, and questions about it answered by Apple Intelligence.
 struct LiveTranscriptView: View {
     let model: AppModel
+    @Bindable var ask: AskModel
+
+    init(model: AppModel) {
+        self.model = model
+        ask = model.ask
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -19,22 +26,32 @@ struct LiveTranscriptView: View {
                 .padding(.bottom, 8)
             }
             if model.systemAudioSilent { silentWarning }
+            tabBar
+                .padding(.horizontal, 12)
+                .padding(.bottom, 8)
             Divider()
-            transcript
+            switch ask.tab {
+            case .transcript: transcript
+            case .ask: AskConversationView(model: model, ask: ask)
+            }
+            Divider()
+            AskComposer(model: model, ask: ask)
+                .padding(12)
             if model.phase == .recording {
                 Divider()
                 HStack {
                     Button("Discard…") { model.discard() }
                     Spacer()
                     Button("Stop Without Summary") { model.stop(summarize: false) }
+                    // No Return shortcut: Return belongs to the question field, and
+                    // shouldn't end a meeting when the field isn't focused.
                     Button("Stop & Summarize") { model.stop(summarize: true) }
-                        .keyboardShortcut(.defaultAction)
                         .disabled(!model.preferences.summarizeOnStop || model.preferences.backendProblem != nil)
                 }
                 .padding(12)
             }
         }
-        .frame(minWidth: 380, minHeight: 320)
+        .frame(minWidth: 400, minHeight: 460)
     }
 
     private var header: some View {
@@ -54,6 +71,40 @@ struct LiveTranscriptView: View {
                 if model.source != .none { LevelMeter(label: "Them", level: model.levels[.them]) }
             }
         }
+    }
+
+    private var tabBar: some View {
+        HStack {
+            Picker("View", selection: $ask.tab) {
+                Text("Transcript").tag(AskModel.Tab.transcript)
+                Text(ask.exchanges.isEmpty ? "Ask" : "Ask (\(ask.exchanges.count))").tag(AskModel.Tab.ask)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .fixedSize()
+            Spacer()
+            switch ask.tab {
+            case .transcript:
+                Button {
+                    model.copyTranscript()
+                } label: {
+                    Label(model.transcriptCopied ? "Copied" : "Copy All",
+                          systemImage: model.transcriptCopied ? "checkmark" : "doc.on.doc")
+                }
+                .disabled(model.segments.isEmpty)
+                .help("Copy the whole transcript, with timestamps and times of day")
+            case .ask:
+                Button {
+                    ask.clear()
+                    ask.tab = .ask
+                } label: {
+                    Label("Clear", systemImage: "trash")
+                }
+                .disabled(ask.exchanges.isEmpty)
+                .help("Start a new conversation")
+            }
+        }
+        .controlSize(.small)
     }
 
     private var status: String {
@@ -113,10 +164,237 @@ struct LiveTranscriptView: View {
                 }
                 .padding(12)
             }
+            .onAppear { if let last = model.segments.last { proxy.scrollTo(last.id, anchor: .bottom) } }
             .onChange(of: model.segments.count) {
                 if let last = model.segments.last { withAnimation { proxy.scrollTo(last.id, anchor: .bottom) } }
             }
         }
+    }
+}
+
+// MARK: - Ask
+
+/// The questions asked so far and their answers, newest at the bottom.
+private struct AskConversationView: View {
+    let model: AppModel
+    let ask: AskModel
+
+    var body: some View {
+        if ask.exchanges.isEmpty {
+            AskEmptyState(model: model)
+        } else {
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 18) {
+                        ForEach(ask.exchanges) { exchange in
+                            ExchangeView(exchange: exchange) { model.retryQuestion(exchange) }
+                                .id(exchange.id)
+                        }
+                        Color.clear.frame(height: 1).id(bottom)
+                    }
+                    .padding(12)
+                }
+                .onAppear { proxy.scrollTo(bottom, anchor: .bottom) }
+                .onChange(of: ask.exchanges.count) { withAnimation { proxy.scrollTo(bottom, anchor: .bottom) } }
+                // Follow a streaming answer as it grows.
+                .onChange(of: ask.exchanges.last?.answer) { proxy.scrollTo(bottom, anchor: .bottom) }
+            }
+        }
+    }
+
+    private let bottom = "bottom"
+}
+
+/// Before the first question: what this is, and some to start with.
+private struct AskEmptyState: View {
+    let model: AppModel
+
+    private static let suggestions = [
+        "Summarize the meeting so far",
+        "What has been decided?",
+        "What are my action items?",
+        "What happened in the last 5 minutes?",
+    ]
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 14) {
+                Image(systemName: "sparkles")
+                    .font(.system(size: 28))
+                    .foregroundStyle(.secondary)
+                VStack(spacing: 4) {
+                    Text("Ask about this meeting").font(.headline)
+                    Text("Answers come from the transcript so far, so they're only as good as what was heard.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(Self.suggestions, id: \.self) { suggestion in
+                        Button {
+                            model.askQuestion(suggestion)
+                        } label: {
+                            Label(suggestion, systemImage: "text.bubble")
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                }
+                .frame(maxWidth: 300)
+                .disabled(!model.canAsk)
+            }
+            .padding(24)
+            .frame(maxWidth: .infinity)
+        }
+    }
+}
+
+/// One question (right, in a bubble) and its answer (left, as plain text).
+private struct ExchangeView: View {
+    let exchange: AskModel.Exchange
+    let retry: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Spacer(minLength: 48)
+                Text(exchange.question)
+                    .textSelection(.enabled)
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 12))
+            }
+            answer
+        }
+    }
+
+    @ViewBuilder private var answer: some View {
+        switch exchange.state {
+        case .thinking:
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text("Reading the transcript…").foregroundStyle(.secondary)
+            }
+        case .failed(let why):
+            VStack(alignment: .leading, spacing: 6) {
+                Label(why, systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button("Try Again", action: retry).controlSize(.small)
+            }
+        case .answering, .done, .stopped:
+            VStack(alignment: .leading, spacing: 4) {
+                Text(rendered)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                footer
+            }
+        }
+    }
+
+    private var footer: some View {
+        HStack(spacing: 6) {
+            if let coverage { Text(coverage) }
+            if exchange.state == .stopped { Text("· Stopped") }
+            Spacer()
+            if exchange.state == .done {
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(exchange.answer, forType: .string)
+                } label: {
+                    Image(systemName: "doc.on.doc")
+                }
+                .buttonStyle(.borderless)
+                .help("Copy this answer")
+            }
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+    }
+
+    /// Which part of the meeting the answer could see.
+    private var coverage: String? {
+        guard let excerpt = exchange.excerpt else { return nil }
+        let range = "\(Transcript.timestamp(excerpt.from))–\(Transcript.timestamp(excerpt.to))"
+        return excerpt.isWholeMeeting ? "Based on \(range)" : "Based on \(range) · earlier parts didn't fit"
+    }
+
+    /// Bold, italics and code as the model wrote them; line breaks kept.
+    private var rendered: AttributedString {
+        let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+        return (try? AttributedString(markdown: exchange.answer, options: options)) ?? AttributedString(exchange.answer)
+    }
+}
+
+/// The question field, shown under both tabs.
+private struct AskComposer: View {
+    let model: AppModel
+    @Bindable var ask: AskModel
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .bottom, spacing: 8) {
+                TextField(placeholder, text: $ask.draft, axis: .vertical)
+                    .textFieldStyle(.plain)
+                    .lineLimit(1 ... 4)
+                    .focused($focused)
+                    .onSubmit(submit)
+                    .disabled(!model.canAsk)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 7)
+                    .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
+                    .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(focused ? Color.accentColor.opacity(0.6) : Color.secondary.opacity(0.3)))
+                if ask.isAnswering {
+                    Button(action: ask.stop) {
+                        Image(systemName: "stop.circle.fill").font(.title2)
+                    }
+                    .buttonStyle(.borderless)
+                    .keyboardShortcut(.cancelAction)
+                    .help("Stop answering (Esc)")
+                } else {
+                    Button(action: submit) {
+                        Image(systemName: "arrow.up.circle.fill").font(.title2)
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(!canSend)
+                    .help("Ask (Return)")
+                }
+            }
+            footnote
+        }
+        .onChange(of: ask.tab) { _, tab in if tab == .ask { focused = true } }
+    }
+
+    private var canSend: Bool {
+        model.canAsk && !ask.isAnswering && !ask.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var placeholder: String {
+        model.segments.isEmpty ? "Ask once something has been said…" : "Ask about this meeting…"
+    }
+
+    @ViewBuilder private var footnote: some View {
+        if let problem = model.askProblem {
+            Label(problem, systemImage: "exclamationmark.triangle")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        } else {
+            Text(model.askKind == .privateCloud
+                ? "Answered by Apple Intelligence on Private Cloud Compute, your summarizer."
+                : "Answered by Apple Intelligence on this Mac. Nothing leaves it.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func submit() {
+        guard canSend else { return }
+        model.askQuestion(ask.draft)
+        focused = true
     }
 }
 

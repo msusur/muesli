@@ -52,7 +52,7 @@ public struct SessionFolder: Sendable, Hashable, Identifiable {
         try MeetingNotes.load(jsonData: Data(contentsOf: file(Self.notesFile)))
     }
 
-    // MARK: What muesli added to Reminders and Calendar
+    // MARK: Which drafts muesli has opened
 
     public func loadLedger() -> AppliedLedger {
         (try? Data(contentsOf: file(Self.ledgerFile))).flatMap { try? AppliedLedger.load(jsonData: $0) } ?? AppliedLedger()

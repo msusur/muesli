@@ -26,7 +26,7 @@ final class WindowManager {
         }
 
         let (title, view, size): (String, AnyView, NSSize) = switch kind {
-        case .live: ("Live Transcript", AnyView(LiveTranscriptView(model: model)), NSSize(width: 460, height: 560))
+        case .live: ("Live Transcript", AnyView(LiveTranscriptView(model: model)), NSSize(width: 480, height: 660))
         case .setup: ("Check Setup", AnyView(SetupView(model: model)), NSSize(width: 620, height: 560))
         case .settings: ("Muesli Settings", AnyView(SettingsView(model: model, preferences: model.preferences)), NSSize(width: 560, height: 440))
         case .review(let url): ("Review: \(url.lastPathComponent)", AnyView(ReviewView(model: model, url: url)), NSSize(width: 600, height: 640))

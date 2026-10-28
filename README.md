@@ -2,25 +2,23 @@
 
 Open-source meeting notes for the Apple ecosystem. Capture calls, meetings and
 conversations on your Mac (and later iPhone and Apple Watch), turn them into
-summaries and action items, and push those into **Reminders**, **Calendar** and
-**Mail drafts**. No bot joins your call and there's no subscription. Transcription
+summaries and action items, and turn follow-ups into **Mail drafts**. No bot joins your call and there's no subscription. Transcription
 runs on-device, and you choose where summaries are generated.
 
 > **Status: step 3.** muesli is a Mac menu-bar app and a command-line tool. Both
 > capture your mic *and* system audio, transcribe them on-device, turn the
-> transcript into notes, and after you review them add the action items to
-> **Reminders**, events to **Calendar** and follow-ups to a **mail draft**. The
-> iPhone and Watch are next; see the [roadmap](#roadmap).
+> transcript into notes (summary, decisions, action items, agreed meetings), and
+> after you review them open the follow-ups as **mail drafts**. The iPhone and Watch are next; see the [roadmap](#roadmap).
 
 ## How it works
 
 ```
- mic ───────────► "Me"   ─┐                                          ┌─► summary, decisions
-                          ├─► SpeechAnalyzer ─► transcript ─► LLM ───┼─► action items ─► Reminders
- system audio ──► "Them" ─┘   (on-device)          ▲                ├─► events ────────► Calendar
- (Core Audio process tap)                          │                └─► email drafts ──► your mail app
-                                          your own rough notes        (you review first; nothing is
-                                          expanded into clean notes    created without your OK)
+ mic ───────────► "Me"   ─┐                                          ┌─► summary, decisions,
+                          ├─► SpeechAnalyzer ─► transcript ─► LLM ───┤   action items, meetings
+ system audio ──► "Them" ─┘   (on-device)          ▲                └─► email drafts ──► your mail app
+ (Core Audio process tap)                          │                    (you review first; nothing is
+                                          your own rough notes           opened without your OK)
+                                          expanded into clean notes
 ```
 
 Speakers are labelled by **channel**, not by voice: your microphone is *Me*,
@@ -50,8 +48,7 @@ muesli record --app zoom                   # only Zoom's audio, not your music
 muesli record --duration 1800              # auto-stop after 30 min
 muesli transcribe ~/Downloads/call.m4a --speaker them
 muesli summarize ~/Muesli/2026-09-25-1430 --backend anthropic --notes my-notes.md
-muesli actions   ~/Muesli/2026-09-25-1430      # review, then add to Reminders / Calendar / Mail
-muesli undo      ~/Muesli/2026-09-25-1430      # remove what muesli added
+muesli actions   ~/Muesli/2026-09-25-1430      # review, then open email drafts in your mail app
 ```
 
 The first run asks for **Microphone** and **System Audio Recording** access. In a
@@ -92,20 +89,31 @@ scripts/bundle-app.sh --install    # builds Muesli.app, copies it to ~/Applicati
 
 Muesli lives in the menu bar, with no Dock icon. Its menu has:
 
-- **Start Recording** (⌘R), or **Record “Weekly sync”** when Calendar shows a meeting
-  in progress or about to start (turn this on in Settings).
+- **Start Recording** (⌘R).
 - **Record From**: all system audio, one of the apps playing right now, or no system
-  audio, plus a microphone toggle.
+  audio.
+- **Microphone**: the system default input, a specific microphone (remembered,
+  and the default is used if it's unplugged), or none.
 - While recording: **Show Live Transcript** (⌘T), a floating panel with the
   transcript and a level meter for each side; **Stop & Summarize** (⌘S);
   **Stop Without Summary**; **Discard Recording…**
-- **Recent Meetings**: open notes or the transcript, **Review Actions…**,
-  **Summarize Now**, **Undo Added Items…**, show in Finder.
+- In the live panel, **Copy All** copies the whole transcript with timestamps and
+  times of day, and the **Ask** tab answers questions about the meeting so far
+  ("what did we decide about the budget?") with Apple Intelligence. Answers stay
+  on your Mac, unless your summarizer is Private Cloud Compute, which holds more
+  of a long meeting. When a meeting is too long to fit, the newest part is used
+  and the answer says which part it saw. Questions still work after you stop,
+  via **Show Last Transcript**.
+- **Recent Meetings**: open notes or the transcript, **Review Email Drafts…**,
+  **Summarize Now**, show in Finder.
 - **Summarize With**, **Speech Engine**, **Language**, **Summarize When Stopped**.
 - **Check Setup…** (`muesli doctor` as a window) and **Settings…** (⌘,).
 
-When notes are ready, a notification offers **Review**. It opens a checklist of
-reminders, events and mail drafts, and nothing is added until you press **Add**.
+When notes have email drafts, a notification offers **Review**. It opens a
+checklist of drafts, and nothing is opened until you press **Open**.
+
+Muesli asks for microphone access when it first starts, so the prompt doesn't
+interrupt your first meeting.
 
 The app has its own permissions, separate from your terminal's. If the *Them*
 meter stays at "silent" while a call is playing, allow Muesli under **Privacy &
@@ -236,50 +244,32 @@ about 3k out, thinking included). Not measured, so check your own bill:
 | `claude-sonnet-5` | $0.06 | $1.20 |
 | `claude-opus-5` (default) | $0.15 | $3.00 |
 
-## Reminders, Calendar and Mail
+## Email drafts
 
-`muesli actions <session>` turns the notes into a numbered review list. Nothing is
-created until you approve it.
+`muesli actions <session>` lists the email drafts from the notes. Nothing is
+opened until you approve it.
 
 ```
 Proposed from “Launch sync” · Fri, 25 Sep 2026
 
-Reminders
-  [x] 1. Send the revised budget to finance — due Mon 28 Sep · Me
-  [ ] 2. Waiting on Sarah: Review the contract — due Wed 30 Sep · Sarah
-
-Calendar
-  [x] 3. Vendor follow-up call — Fri 2 Oct, 15:00–15:30 · with Bob
-
 Email drafts (opened in your mail app; never sent)
-  [x] 4. Update on the launch — no recipient address yet · add an address for Board
+  [x] 1. Update on the launch — no recipient address yet · add an address for Board
 
-Add which? [Enter = checked · a = all · n = none · or numbers like 1,3-4]:
+Open which? [Enter = checked · a = all · n = none · or numbers like 1,3-4]:
 ```
 
-- **Your tasks are pre-checked; other people's aren't.** Someone else's action
-  item is offered as a "Waiting on Sarah: …" reminder, unchecked.
-- **Events** are created in the meeting's time zone, so 15:00 in London stays
-  15:00 London wherever your Mac is. A date with no time becomes all-day. An event
-  with no date is listed under "Not proposed" with the reason.
-- **Email drafts** open a pre-filled compose window in your default mail client via
-  a `mailto:` link. muesli can't send mail. It never invents an address: names
-  like "Board" are left for you to fill in.
-- **No duplicates.** muesli records what it created in `applied.json` next to the
+- **Drafts only.** Each opens a pre-filled compose window in your default mail
+  client via a `mailto:` link. muesli can't send mail. It never invents an
+  address: names like "Board" are left for you to fill in.
+- **No duplicates.** muesli records what it opened in `applied.json` next to the
   notes, so running `actions` again (even after re-summarizing) only proposes what's
   new. `--force` overrides.
-- **Undo.** `muesli undo <session>` removes the reminders and events it added.
-  Email drafts can't be undone; close them in your mail app.
-- **Scripts:** `--dry-run` only prints, `--yes` applies the checked items, `--all`
-  applies everything, `--only reminders,events,emails` narrows it, and
-  `--reminders-list` / `--calendar` pick where things go. Without a terminal and
-  without `--yes` or `--all`, muesli refuses to apply anything.
+- **Scripts:** `--dry-run` only prints, `--yes` opens the checked drafts and `--all`
+  opens everything. Without a terminal and without `--yes` or `--all`, muesli
+  refuses to open anything.
 
-**Permissions.** Reminders needs full access. Calendar works with *write-only*
-access for adding events, but choosing a calendar by name and `undo` need *full*
-access; muesli tells you when that's the reason something failed. Grant them to
-your terminal app in System Settings → Privacy & Security. `muesli doctor` shows
-where you stand.
+Action items and agreed meetings stay in `notes.md` as a checklist and a list;
+muesli doesn't add them to Reminders or Calendar.
 
 ## Layout
 
@@ -289,7 +279,6 @@ where you stand.
 | `MuesliAudio` | Mic capture, system-audio tap (all, or chosen apps, followed live), file source, 16 kHz WAV recorder | macOS |
 | `MuesliTranscribe` | Apple `SpeechAnalyzer` wrapper (live) and the Whisper engine (via mlx-whisper) | macOS 26+ |
 | `MuesliSummarize` | Backends: Apple Foundation Models, Claude (raw HTTP), OpenAI-compatible | macOS 26+ |
-| `MuesliActions` | Reminders and Calendar via EventKit: create, and undo | macOS 26+, iOS |
 | `muesli` | The CLI | macOS |
 
 The notes format is defined once (`NotesSchema`) and rendered as a JSON Schema for
@@ -316,13 +305,13 @@ backend tests use a mock HTTP server and make no network calls.
 - [x] **0.** Dual-stream capture → on-device transcript (CLI)
 - [x] **1.** Summaries + action extraction behind a `NotesGenerator` protocol;
       merges your typed notes with the transcript
-- [x] **2.** Review → Reminders, Calendar events, mail drafts (EventKit and
-      `mailto:`; drafts only, never auto-send), with a ledger and `undo`
-- [x] **3.** Mac menu-bar app: live transcript, review window, calendar-aware start
+- [x] **2.** Review → mail drafts (`mailto:`; drafts only, never auto-send), with
+      a ledger. (Reminders and Calendar were here once and have been removed.)
+- [x] **3.** Mac menu-bar app: live transcript, review window, microphone choice
 - [ ] **4.** iPhone app for in-person capture, synced via CloudKit / iCloud Drive
 - [ ] **5.** Apple Watch as a capture device (SpeechAnalyzer isn't on watchOS, so
       audio goes to the iPhone for transcription)
-- [ ] Fill email recipients from Contacts; warn about calendar conflicts
+- [ ] Fill email recipients from Contacts
 - [x] Capture chosen apps only (`--app` / `--exclude-app`) instead of all system audio
 - [x] Whisper as a second speech engine (99 languages), gated and safeguarded
 - [ ] Pack speech stretches into shared Whisper windows for speed; try
