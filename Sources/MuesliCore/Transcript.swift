@@ -129,9 +129,21 @@ public struct Transcript: Codable, Sendable, Equatable {
         out += "- Duration: \(Self.timestamp(duration))\n"
         out += "- Locale: \(locale)\n\n"
         for turn in turns(maxGap: maxGap) {
-            out += "**\(turn.speaker.label)** `\(Self.timestamp(turn.start))`  \n\(turn.text)\n\n"
+            let clock = clockTime(startedAt.addingTimeInterval(turn.start))
+            out += "**\(turn.speaker.label)** `\(Self.timestamp(turn.start))` (\(clock))  \n\(turn.text)\n\n"
         }
         return out
+    }
+
+    /// Time of day in the meeting's time zone, e.g. "11:48am".
+    func clockTime(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = timeZone
+        formatter.dateFormat = "h:mma"
+        formatter.amSymbol = "am"
+        formatter.pmSymbol = "pm"
+        return formatter.string(from: date)
     }
 
     public static func timestamp(_ seconds: TimeInterval) -> String {

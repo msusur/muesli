@@ -57,6 +57,21 @@ struct TranscriptTests {
         #expect(Transcript.timestamp(-3) == "00:00")
     }
 
+    @Test("markdown headings show the time of day in the meeting's time zone, and plain text doesn't")
+    func clockTimes() {
+        // 2026-10-28 11:47:30 UTC; London is on GMT then.
+        var t = Transcript(startedAt: Date(timeIntervalSince1970: 1_792_928_850), locale: "en-GB", timeZoneIdentifier: "Europe/London")
+        t.append(seg(.them, 31, 40, "where the ownership lies"))
+        t.append(seg(.me, 7_300, 7_305, "Yeah."))
+        let md = t.markdown()
+        #expect(md.contains("**Them** `00:31` (11:48am)  \nwhere the ownership lies"))
+        #expect(md.contains("**Me** `2:01:40` (1:49pm)  \nYeah."))
+        #expect(!t.plainText().contains("am)"))
+
+        let tokyo = Transcript(startedAt: t.startedAt, locale: "ja-JP", timeZoneIdentifier: "Asia/Tokyo")
+        #expect(tokyo.clockTime(t.startedAt) == "8:47pm")
+    }
+
     @Test("plain text is one line per turn")
     func plainText() {
         var t = Transcript(locale: "en-US")
