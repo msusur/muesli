@@ -1,5 +1,6 @@
 import Foundation
 import MuesliCore
+import MuesliSession
 import MuesliSummarize
 
 /// Builds the summarizer the user asked for and checks that it can work, so a
@@ -38,24 +39,10 @@ func makeGenerator(_ options: Options) async throws -> any NotesGenerator {
         apiKeyEnvironmentVariable: options.value("--api-key-env"), contextTokens: contextTokens,
         useFallbacks: !options.has("--no-fallback")
     )
-    let generator = try configuration.makeGenerator()
-    try await generator.preflight()
+    let generator = try await makeCheckedGenerator(configuration)
 
     if let notice = disclosure(for: backend, baseURL: baseURL) { fputs("Note: \(notice)\n", stderr) }
     return generator
-}
-
-/// Sending a transcript anywhere should never be a surprise.
-private func disclosure(for backend: Backend, baseURL: URL?) -> String? {
-    switch backend {
-    case .apple: return nil
-    case .appleCloud: return "the transcript text will be processed on Apple's Private Cloud Compute."
-    case .anthropic: return "the transcript text will be sent to Anthropic's API."
-    case .openai:
-        guard let host = baseURL?.host() else { return nil }
-        let local = ["localhost", "127.0.0.1", "::1", "[::1]"].contains(host) || host.hasSuffix(".local")
-        return local ? nil : "the transcript text will be sent to \(host)."
-    }
 }
 
 /// Summarizes, prints the notes, and saves `notes.md` / `notes.json` beside the transcript.
@@ -69,13 +56,10 @@ func summarizeAndSave(
         }
         return text
     }
-    let context = MeetingContext(
-        title: options.value("--title"), start: transcript.startedAt,
-        timeZone: transcript.timeZone, userNotes: userNotes
-    )
-
     fputs("Summarizing with \(generator.displayName)…\n", stderr)
-    let result = try await MeetingSummarizer(generator: generator).summarize(transcript, context: context)
+    let folder = options.has("--no-save") ? nil : directory.map(SessionFolder.init)
+    let result = try await summarize(
+        transcript, generator: generator, title: options.value("--title"), userNotes: userNotes, saveTo: folder)
 
     print(result.notes.markdown())
     let usage = result.usage
@@ -83,13 +67,10 @@ func summarizeAndSave(
         ? " · \(usage.inputTokens) in / \(usage.outputTokens) out tokens" : ""
     fputs("Done: \(result.requests) request\(result.requests == 1 ? "" : "s")\(tokens)\n", stderr)
 
-    guard let directory, !options.has("--no-save") else { return }
-    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-    try result.notes.jsonData().write(to: directory.appending(path: "notes.json"))
-    try result.notes.markdown().write(to: directory.appending(path: "notes.md"), atomically: true, encoding: .utf8)
-    fputs("Saved → \(directory.appending(path: "notes.md").path)\n", stderr)
-    if !result.notes.actionItems.isEmpty || !result.notes.events.isEmpty || !result.notes.emailDrafts.isEmpty {
-        fputs("Next: review and add them to Reminders, Calendar and Mail with\n  muesli actions \"\(directory.path)\"\n", stderr)
+    guard let folder else { return }
+    fputs("Saved → \(folder.file("notes.md").path)\n", stderr)
+    if result.notes.hasProposals {
+        fputs("Next: review and add them to Reminders, Calendar and Mail with\n  muesli actions \"\(folder.url.path)\"\n", stderr)
     }
 }
 

@@ -10,7 +10,10 @@ let package = Package(
         .library(name: "MuesliTranscribe", targets: ["MuesliTranscribe"]),
         .library(name: "MuesliSummarize", targets: ["MuesliSummarize"]),
         .library(name: "MuesliActions", targets: ["MuesliActions"]),
+        .library(name: "MuesliSession", targets: ["MuesliSession"]),
         .executable(name: "muesli", targets: ["muesli"]),
+        // The menu-bar app. `scripts/bundle-app.sh` wraps it in Muesli.app.
+        .executable(name: "MuesliApp", targets: ["MuesliApp"]),
     ],
     targets: [
         // Pure-Swift models. No Apple-framework imports beyond Foundation, so it
@@ -29,9 +32,17 @@ let package = Package(
         // Reminders and Calendar via EventKit (macOS and iOS).
         .target(name: "MuesliActions", dependencies: ["MuesliCore"]),
 
+        // A whole meeting, end to end: record, transcribe, save, summarize, apply.
+        // Shared by the command line and the menu-bar app, so neither owns the pipeline.
+        .target(
+            name: "MuesliSession",
+            dependencies: ["MuesliCore", "MuesliAudio", "MuesliTranscribe", "MuesliSummarize", "MuesliActions"]
+        ),
+
         .executableTarget(
             name: "muesli",
-            dependencies: ["MuesliCore", "MuesliAudio", "MuesliTranscribe", "MuesliSummarize", "MuesliActions"],
+            dependencies: ["MuesliCore", "MuesliAudio", "MuesliTranscribe", "MuesliSummarize", "MuesliActions", "MuesliSession"],
+            exclude: ["Info.plist"], // embedded via -sectcreate below, not a bundle resource
             linkerSettings: [
                 // Embed usage strings so the mic / system-audio TCC prompts have
                 // a description even for a bare command-line binary.
@@ -44,9 +55,16 @@ let package = Package(
             ]
         ),
 
+        .executableTarget(
+            name: "MuesliApp",
+            dependencies: ["MuesliCore", "MuesliAudio", "MuesliTranscribe", "MuesliSummarize", "MuesliActions", "MuesliSession"],
+            exclude: ["Info.plist"] // copied into Muesli.app by scripts/bundle-app.sh
+        ),
+
         .testTarget(name: "MuesliCoreTests", dependencies: ["MuesliCore"]),
         .testTarget(name: "MuesliAudioTests", dependencies: ["MuesliAudio"]),
         .testTarget(name: "MuesliSummarizeTests", dependencies: ["MuesliSummarize", "MuesliCore"]),
+        .testTarget(name: "MuesliSessionTests", dependencies: ["MuesliSession", "MuesliCore", "MuesliAudio"]),
         .testTarget(
             name: "MuesliTranscribeTests",
             dependencies: ["MuesliTranscribe", "MuesliAudio", "MuesliCore"],

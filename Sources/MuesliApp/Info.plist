@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>dev.muesli.app</string>
+	<key>CFBundleName</key>
+	<string>Muesli</string>
+	<key>CFBundleDisplayName</key>
+	<string>Muesli</string>
+	<key>CFBundleExecutable</key>
+	<string>MuesliApp</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>26.0</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.productivity</string>
+	<!-- Menu bar only: no Dock icon, no app menu. -->
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Muesli records your microphone so it can transcribe your side of a conversation. Audio is processed on-device.</string>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>Muesli records system audio so it can transcribe the other participants in a call or meeting. Audio is processed on-device.</string>
+	<key>NSRemindersFullAccessUsageDescription</key>
+	<string>Muesli adds the action items from your meetings to Reminders, only after you approve them.</string>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>Muesli adds events agreed in your meetings to Calendar, only after you approve them, can remove what it added, and can name a recording after the meeting you're in.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Muesli transcribes audio on-device using Apple's speech recognition.</string>
+</dict>
+</plist>

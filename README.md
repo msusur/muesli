@@ -6,11 +6,11 @@ summaries and action items, and push those into **Reminders**, **Calendar** and
 **Mail drafts**. No bot joins your call and there's no subscription. Transcription
 runs on-device, and you choose where summaries are generated.
 
-> **Status: step 2.** muesli is a command-line tool that captures your mic *and*
-> system audio, transcribes both on-device, turns the transcript into notes, and
-> after you review them adds the action items to **Reminders**, events to
-> **Calendar** and follow-ups to a **mail draft**. The menu-bar app, iPhone and
-> Watch are next; see the [roadmap](#roadmap).
+> **Status: step 3.** muesli is a Mac menu-bar app and a command-line tool. Both
+> capture your mic *and* system audio, transcribe them on-device, turn the
+> transcript into notes, and after you review them add the action items to
+> **Reminders**, events to **Calendar** and follow-ups to a **mail draft**. The
+> iPhone and Watch are next; see the [roadmap](#roadmap).
 
 ## How it works
 
@@ -83,6 +83,39 @@ mutually exclusive.
 Safari plays audio through a per-app WebKit process named after the app
 ("Safari Graphics and Media"), so `--app safari` should find it; run `muesli apps`
 during your call to check what your app is called.
+
+## Menu-bar app
+
+```sh
+scripts/bundle-app.sh --install    # builds Muesli.app, copies it to ~/Applications, opens it
+```
+
+Muesli lives in the menu bar, with no Dock icon. Its menu has:
+
+- **Start Recording** (⌘R), or **Record “Weekly sync”** when Calendar shows a meeting
+  in progress or about to start (turn this on in Settings).
+- **Record From**: all system audio, one of the apps playing right now, or no system
+  audio, plus a microphone toggle.
+- While recording: **Show Live Transcript** (⌘T), a floating panel with the
+  transcript and a level meter for each side; **Stop & Summarize** (⌘S);
+  **Stop Without Summary**; **Discard Recording…**
+- **Recent Meetings**: open notes or the transcript, **Review Actions…**,
+  **Summarize Now**, **Undo Added Items…**, show in Finder.
+- **Summarize With**, **Speech Engine**, **Language**, **Summarize When Stopped**.
+- **Check Setup…** (`muesli doctor` as a window) and **Settings…** (⌘,).
+
+When notes are ready, a notification offers **Review**. It opens a checklist of
+reminders, events and mail drafts, and nothing is added until you press **Add**.
+
+The app has its own permissions, separate from your terminal's. If the *Them*
+meter stays at "silent" while a call is playing, allow Muesli under **Privacy &
+Security → Screen & System Audio Recording**; Muesli also warns you about this
+during a recording. API keys are kept in the Keychain, because an app opened
+from Finder doesn't see your shell's environment variables.
+
+Without a code-signing identity the app is signed ad hoc, and macOS asks for
+permissions again after every rebuild. Set `MUESLI_SIGN_IDENTITY` to avoid that
+(see `scripts/bundle-app.sh`).
 
 ## Speech engines
 
@@ -285,7 +318,7 @@ backend tests use a mock HTTP server and make no network calls.
       merges your typed notes with the transcript
 - [x] **2.** Review → Reminders, Calendar events, mail drafts (EventKit and
       `mailto:`; drafts only, never auto-send), with a ledger and `undo`
-- [ ] **3.** Mac menu-bar app: live transcript, notes pane, calendar-aware start
+- [x] **3.** Mac menu-bar app: live transcript, review window, calendar-aware start
 - [ ] **4.** iPhone app for in-person capture, synced via CloudKit / iCloud Drive
 - [ ] **5.** Apple Watch as a capture device (SpeechAnalyzer isn't on watchOS, so
       audio goes to the iPhone for transcription)

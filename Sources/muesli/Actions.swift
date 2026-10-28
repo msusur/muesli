@@ -1,8 +1,7 @@
 import Foundation
 import MuesliActions
 import MuesliCore
-
-private let ledgerFileName = "applied.json"
+import MuesliSession
 
 private func resolveSession(_ path: String, needing file: String) throws -> URL {
     let url = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
@@ -15,14 +14,6 @@ private func resolveSession(_ path: String, needing file: String) throws -> URL 
         throw UsageError("\(directory.path) has no \(file). Run `muesli summarize` on it first.")
     }
     return directory
-}
-
-private func loadLedger(_ directory: URL) -> AppliedLedger {
-    (try? Data(contentsOf: directory.appending(path: ledgerFileName))).flatMap { try? AppliedLedger.load(jsonData: $0) } ?? AppliedLedger()
-}
-
-private func saveLedger(_ ledger: AppliedLedger, to directory: URL) throws {
-    try ledger.jsonData().write(to: directory.appending(path: ledgerFileName))
 }
 
 private func isInteractive() -> Bool { isatty(STDIN_FILENO) != 0 }
@@ -45,13 +36,14 @@ struct ActionsCommand {
             throw UsageError("actions needs a session folder (or its notes.json)")
         }
         let directory = try resolveSession(path, needing: "notes.json")
+        let runner = ActionRunner(
+            folder: SessionFolder(directory),
+            configuration: .init(remindersList: options.value("--reminders-list"), calendar: options.value("--calendar")))
+        var plan: ActionPlan
         let notes: MeetingNotes
-        do { notes = try MeetingNotes.load(jsonData: Data(contentsOf: directory.appending(path: "notes.json"))) } catch {
+        do { (plan, notes) = try runner.plan(force: options.has("--force")) } catch {
             throw UsageError("notes.json isn't readable: \(error.localizedDescription)")
         }
-
-        var ledger = loadLedger(directory)
-        var plan = ActionPlan(notes: notes, ledger: options.has("--force") ? AppliedLedger() : ledger)
         if let only = options.value("--only") { plan.actions = try filter(plan.actions, only: only) }
 
         printReview(plan, notes: notes)
@@ -65,33 +57,14 @@ struct ActionsCommand {
             return
         }
 
-        let applier = EventKitApplier(configuration: .init(remindersList: options.value("--reminders-list"), calendar: options.value("--calendar")))
-        var denied = Set<ProposedAction.Kind>()
-        for (kind, reminders, events) in [(ProposedAction.Kind.reminder, true, false), (.event, false, true)]
-        where selected.contains(where: { $0.kind == kind }) {
-            do { try await applier.requestAccess(reminders: reminders, events: events) } catch {
-                fputs("✗ \(error.localizedDescription)\n", stderr)
-                denied.insert(kind)
-            }
-        }
-
-        var failures = 0
         fputs("\n", stderr)
-        for action in selected {
-            if denied.contains(action.kind) { failures += 1; continue }
-            do {
-                let externalID: String
-                switch action.payload {
-                case .reminder(let request): externalID = try await applier.createReminder(request)
-                case .event(let request): externalID = try await applier.createEvent(request)
-                case .email(let request): try openMailDraft(request); externalID = ""
-                }
-                ledger.record(action, externalID: externalID)
-                try saveLedger(ledger, to: directory) // after each item, so a crash never loses track
-                fputs("✓ \(verb(action.kind)) “\(action.title)”\n", stderr)
-            } catch {
-                fputs("✗ “\(action.title)”: \(error.localizedDescription)\n", stderr)
+        var failures = 0
+        for outcome in await runner.apply(selected) {
+            if let error = outcome.error {
+                fputs("✗ “\(outcome.action.title)”: \(error)\n", stderr)
                 failures += 1
+            } else {
+                fputs("✓ \(verb(outcome.action.kind)) “\(outcome.action.title)”\n", stderr)
             }
         }
         if selected.contains(where: { $0.kind != .email }) {
@@ -167,22 +140,6 @@ struct ActionsCommand {
             fputs("Didn't understand “\(answer)”. Use numbers 1–\(actions.count), a, or n.\n", stderr)
         }
     }
-
-    /// Opens a pre-filled compose window in the default mail client. Muesli
-    /// never sends mail.
-    private func openMailDraft(_ email: EmailRequest) throws {
-        guard let url = MailDraft.mailtoURL(to: email.recipients, subject: email.subject, body: email.body) else {
-            throw UsageError("couldn't build a mail link for “\(email.subject)”")
-        }
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        process.arguments = [url.absoluteString]
-        try process.run()
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else {
-            throw UsageError("couldn't open your mail app (open exited \(process.terminationStatus))")
-        }
-    }
 }
 
 // MARK: - undo
@@ -194,9 +151,9 @@ struct UndoCommand {
 
     func run() async throws {
         guard let path = options.positional.first else { throw UsageError("undo needs a session folder") }
-        let directory = try resolveSession(path, needing: ledgerFileName)
-        var ledger = loadLedger(directory)
-        let removable = ledger.entries.filter { $0.kind != .email && !$0.externalID.isEmpty }
+        let directory = try resolveSession(path, needing: SessionFolder.ledgerFile)
+        let runner = ActionRunner(folder: SessionFolder(directory))
+        let removable = runner.undoable()
         guard !removable.isEmpty else {
             print("Nothing to undo. (Email drafts can't be undone; close them in your mail app.)")
             return
@@ -211,19 +168,13 @@ struct UndoCommand {
             }
         }
 
-        let applier = EventKitApplier()
-        try await applier.requestAccess(reminders: removable.contains { $0.kind == .reminder }, events: removable.contains { $0.kind == .event })
-
         var failures = 0
-        for entry in removable {
-            do {
-                let removed = try await applier.remove(kind: entry.kind, identifier: entry.externalID)
-                ledger.remove(key: entry.key)
-                try saveLedger(ledger, to: directory)
-                fputs(removed ? "✓ Removed “\(entry.title)”\n" : "• “\(entry.title)” was already gone\n", stderr)
-            } catch {
-                fputs("✗ “\(entry.title)”: \(error.localizedDescription)\n", stderr)
+        for outcome in try await runner.undo() {
+            if let error = outcome.error {
+                fputs("✗ “\(outcome.title)”: \(error)\n", stderr)
                 failures += 1
+            } else {
+                fputs(outcome.removed ? "✓ Removed “\(outcome.title)”\n" : "• “\(outcome.title)” was already gone\n", stderr)
             }
         }
         if failures > 0 { throw ExitFailure() }

@@ -4,6 +4,7 @@ import Foundation
 import MuesliAudio
 import MuesliActions
 import MuesliCore
+import MuesliSession
 import MuesliSummarize
 import MuesliTranscribe
 import os
@@ -23,18 +24,8 @@ private func prepareLocale(_ requested: Locale) async throws -> Locale {
     return locale
 }
 
-private func defaultOutputDirectory(for date: Date) -> URL {
-    let stamp = date.formatted(.iso8601.year().month().day().dateSeparator(.dash).time(includingFractionalSeconds: false).timeSeparator(.omitted))
-        .replacingOccurrences(of: "T", with: "-")
-    return FileManager.default.homeDirectoryForCurrentUser
-        .appending(path: "Muesli", directoryHint: .isDirectory)
-        .appending(path: stamp, directoryHint: .isDirectory)
-}
-
 private func save(_ transcript: Transcript, title: String?, to directory: URL) throws {
-    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-    try transcript.jsonData().write(to: directory.appending(path: "transcript.json"))
-    try transcript.markdown(title: title).write(to: directory.appending(path: "transcript.md"), atomically: true, encoding: .utf8)
+    try SessionFolder(directory).saveTranscript(transcript, title: title)
     print("Saved → \(directory.path)")
 }
 
@@ -73,7 +64,6 @@ struct RecordCommand {
         guard wantMic || wantSystem else { throw UsageError("--no-mic and --no-system together leave nothing to record") }
         let scope = try systemScope(options, wantSystem: wantSystem)
         let engine = try Engine(options)
-        let keepAudio = options.has("--keep-audio")
 
         let duration = try options.value("--duration").map { raw -> TimeInterval in
             guard let d = TimeInterval(raw), d > 0 else { throw UsageError("--duration must be a positive number of seconds") }
@@ -82,77 +72,53 @@ struct RecordCommand {
 
         // Fail now, not after an hour-long meeting, if something can't work.
         let generator = options.has("--summarize") ? try await makeGenerator(options) : nil
-        let whisper = whisperConfiguration(options)
-        if engine.usesWhisper {
-            guard !options.has("--no-save") else {
-                throw UsageError("--engine whisper needs to save the recording, so it can't be combined with --no-save")
-            }
-            try preflightWhisper(whisper)
+        if engine.usesWhisper, options.has("--no-save") {
+            throw UsageError("--engine whisper needs to save the recording, so it can't be combined with --no-save")
         }
 
-        // Apple's recognizer needs a supported locale; Whisper doesn't, which is
-        // the point of using it for languages Apple can't do.
-        let locale = engine.usesApple ? try await prepareLocale(resolveLocale(options)) : resolveLocale(options)
-        let sessionStart = HostClock.now()
+        var recording = RecordingOptions()
+        recording.microphone = wantMic
+        recording.systemAudio = wantSystem
+        recording.scope = scope
+        recording.engine = engine
+        recording.locale = resolveLocale(options)
+        recording.whisper = whisperConfiguration(options)
+        recording.keepAudio = options.has("--keep-audio")
+        recording.title = options.value("--title")
         let startedAt = Date()
-        let builder = TranscriptBuilder(startedAt: startedAt, locale: locale.identifier)
-        let directory = options.has("--no-save") ? nil : (
-            options.value("--out").map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) }
-                ?? defaultOutputDirectory(for: startedAt))
-        let audioFolder = directory?.appending(path: SessionAudio.folderName, directoryHint: .isDirectory)
+        recording.folder = options.has("--no-save") ? nil : (
+            options.value("--out").map { SessionFolder(URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath)) }
+                ?? SessionFolder.new(startedAt: startedAt))
 
-        let mic = MicrophoneCapture()
-        let system = SystemAudioCapture(scope: scope)
-        system.onUpdate = { update in
-            switch (update, scope) {
-            case (.waiting(let terms), _):
+        let session = RecordingSession(options: recording) { event in
+            switch event {
+            case .downloadingSpeechModel: fputs("Downloading speech model (one-time)…\n", stderr)
+            case .note(let note): fputs("Note: \(note)\n", stderr)
+            case .systemAudio(.waiting(let terms)):
                 fputs("Waiting for audio from \(terms.map { "“\($0)”" }.joined(separator: ", "))… start your call and muesli will pick it up.\n", stderr)
-            case (.following(let names), .only):
-                fputs("Capturing only: \(names.joined(separator: ", "))\n", stderr)
-            case (.following(let names), .excluding) where !names.isEmpty:
-                fputs("Capturing everything except: \(names.joined(separator: ", "))\n", stderr)
-            case (.failed(let why), _):
-                fputs("System audio problem: \(why)\n", stderr)
-            default:
-                break
-            }
-        }
-
-        var tasks: [Task<Void, Error>] = []
-        var recorders: [Speaker: StreamRecorder] = [:]
-
-        func consume(_ raw: AsyncStream<AudioChunk>, as speaker: Speaker) throws {
-            var chunks = raw
-            if engine.usesWhisper, let audioFolder {
-                let recorder = try StreamRecorder(url: audioFolder.appending(path: speaker == .me ? "mic.wav" : "system.wav"))
-                recorders[speaker] = recorder
-                chunks = AudioTee.recording(raw, to: recorder) { error in
-                    fputs("Couldn't write audio: \(error.localizedDescription)\n", stderr)
+            case .systemAudio(.following(let names)):
+                switch scope {
+                case .only: fputs("Capturing only: \(names.joined(separator: ", "))\n", stderr)
+                case .excluding where !names.isEmpty: fputs("Capturing everything except: \(names.joined(separator: ", "))\n", stderr)
+                default: break
                 }
-            }
-            if engine.usesApple {
-                let transcriber = StreamTranscriber(speaker: speaker, locale: locale, sessionStart: sessionStart)
-                tasks.append(Task {
-                    for try await segment in transcriber.transcribe(chunks) {
-                        await builder.add(segment)
-                        printLive(segment)
-                    }
-                })
-            } else {
-                tasks.append(Task { for await _ in chunks {} })
-            }
-        }
-
-        // Start system audio first: it's the one that needs a permission prompt.
-        if wantSystem { try consume(try system.start(), as: .them) }
-        if wantMic {
-            do {
-                try consume(try await mic.start(), as: .me)
-            } catch {
-                system.stop()
-                throw error
+            case .systemAudio(.failed(let why)): fputs("System audio problem: \(why)\n", stderr)
+            case .systemAudioSilent:
+                fputs("""
+                    Warning: something is playing, but system audio (Them) is completely silent.
+                    Allow your terminal in System Settings → Privacy & Security → Screen & System Audio Recording,
+                    then restart the recording.\n
+                    """, stderr)
+            case .segment(let segment): printLive(segment)
+            case .whisper(let progress): printWhisperProgress(progress)
+            case .whisperFailed(let why, let audioFolder):
+                fputs("Whisper failed: \(why)\nYour audio is kept in \(audioFolder.path). Retry with:\n  muesli transcribe \"\(audioFolder.deletingLastPathComponent().path)\" --engine whisper\n", stderr)
+                if engine != .whisper { fputs("Using the live Apple transcript instead.\n", stderr) }
+            case .audioWriteFailed(let why): fputs("Couldn't write audio: \(why)\n", stderr)
+            case .started, .level, .stopping, .systemAudio: break
             }
         }
+        try await session.start()
 
         let systemLabel: String = switch scope {
         case .everything: "system audio (Them)"
@@ -160,61 +126,32 @@ struct RecordCommand {
         case .excluding(let apps): "system audio except \(apps.terms.joined(separator: ", ")) (Them)"
         }
         let sources = [wantMic ? "mic (Me)" : nil, wantSystem ? systemLabel : nil].compactMap { $0 }.joined(separator: " + ")
-        fputs("Recording \(sources) — \(engine.usesApple ? locale.identifier : "Whisper"). Press Ctrl-C to stop.\n", stderr)
+        fputs("Recording \(sources) — \(engine.usesApple ? recording.locale.identifier : "Whisper"). Press Ctrl-C to stop.\n", stderr)
         if engine == .whisper { fputs("Whisper transcribes after you stop, so there's no live text.\n", stderr) }
         if wantMic && wantSystem {
             fputs("Tip: use headphones, or your mic will also pick up the other side from your speakers.\n", stderr)
         }
 
         await waitForStop(after: duration)
-
         fputs("\nStopping…\n", stderr)
-        mic.stop()
-        system.stop()
-        for task in tasks { try await task.value }
 
-        var transcript = await builder.transcript
-        var whisperFailed = false
+        let result: RecordingResult
+        do { result = try await session.stop() } catch RecordingError.whisperFailed { throw ExitFailure() }
+        if engine == .whisper { printSegments(result.transcript) }
 
-        if engine.usesWhisper, let directory {
-            let streams = [Speaker.me, .them].compactMap { speaker -> RecordedStream? in
-                guard let recorder = recorders[speaker] else { return nil }
-                let offset = recorder.firstHostTime.flatMap { $0 == 0 ? nil : HostClock.seconds(from: sessionStart, to: $0) } ?? 0
-                return RecordedStream(speaker: speaker, wav: recorder.url, offset: max(0, offset))
-            }
-            try SessionAudio(streams: streams.map {
-                .init(speaker: $0.speaker, file: $0.wav.lastPathComponent, startOffset: $0.offset)
-            }).jsonData().write(to: directory.appending(path: "\(SessionAudio.folderName)/\(SessionAudio.manifestName)"))
-
-            do {
-                let refined = try await runWhisperPass(streams, configuration: whisper, startedAt: startedAt)
-                if engine == .appleThenWhisper, !transcript.segments.isEmpty {
-                    try transcript.jsonData().write(to: directory.appending(path: "transcript.apple.json"))
-                }
-                transcript = refined
-                if engine == .whisper { printSegments(transcript) }
-                if !keepAudio { try? FileManager.default.removeItem(at: audioFolder!) }
-            } catch {
-                whisperFailed = true
-                fputs("Whisper failed: \(error.localizedDescription)\nYour audio is kept in \(audioFolder!.path). Retry with:\n  muesli transcribe \"\(directory.path)\" --engine whisper\n", stderr)
-                if engine == .whisper { throw ExitFailure() }
-                fputs("Using the live Apple transcript instead.\n", stderr)
-            }
-        }
-
-        guard !transcript.segments.isEmpty else {
+        guard !result.transcript.segments.isEmpty else {
             fputs("No speech was recognized, so nothing was saved.\n", stderr)
-            if !whisperFailed, !keepAudio, let audioFolder { try? FileManager.default.removeItem(at: audioFolder) }
             return
         }
-        if let directory { try save(transcript, title: options.value("--title"), to: directory) }
+        if let folder = result.folder { print("Saved → \(folder.url.path)") }
 
         if let generator {
             do {
-                try await summarizeAndSave(transcript, generator: generator, options: options, directory: directory)
+                try await summarizeAndSave(result.transcript, generator: generator, options: options, directory: result.folder?.url)
             } catch {
                 // The recording is safe; say how to retry rather than losing the meeting to a network blip.
-                let retry = directory.map { "muesli summarize \"\($0.path)\" --backend \(options.value("--backend") ?? "…")" } ?? "muesli summarize <transcript.json>"
+                let retry = result.folder.map { "muesli summarize \"\($0.url.path)\" --backend \(options.value("--backend") ?? "…")" }
+                    ?? "muesli summarize <transcript.json>"
                 fputs("Summarizing failed: \(error.localizedDescription)\nYour transcript is saved. Retry with:\n  \(retry)\n", stderr)
                 throw ExitFailure()
             }
@@ -276,13 +213,14 @@ struct TranscribeCommand {
 
         if engine == .whisper {
             let configuration = whisperConfiguration(options)
-            try preflightWhisper(configuration)
+            try checkWhisper(configuration)
             let scratch = FileManager.default.temporaryDirectory.appending(path: "muesli-\(UUID().uuidString)", directoryHint: .isDirectory)
             defer { try? FileManager.default.removeItem(at: scratch) }
             let wav = scratch.appending(path: "audio.wav")
             try await convertToWAV(url, to: wav)
             let transcript = try await runWhisperPass(
-                [RecordedStream(speaker: speaker, wav: wav, offset: 0)], configuration: configuration, startedAt: Date())
+                [RecordedStream(speaker: speaker, wav: wav, offset: 0)], configuration: configuration, startedAt: Date(),
+                progress: printWhisperProgress)
             printSegments(transcript)
             try saveIfRequested(transcript, defaultTitle: url.deletingPathExtension().lastPathComponent)
             return
@@ -313,12 +251,12 @@ struct TranscribeCommand {
             throw UsageError("\(session.path) has no recorded audio. Record with --engine whisper --keep-audio to keep it.")
         }
         let configuration = whisperConfiguration(options)
-        try preflightWhisper(configuration)
+        try checkWhisper(configuration)
 
         let audioFolder = session.appending(path: SessionAudio.folderName)
         let streams = manifest.streams.map { RecordedStream(speaker: $0.speaker, wav: audioFolder.appending(path: $0.file), offset: $0.startOffset) }
         let startedAt = (try? Transcript.load(jsonData: Data(contentsOf: session.appending(path: "transcript.json"))))?.startedAt ?? Date()
-        let transcript = try await runWhisperPass(streams, configuration: configuration, startedAt: startedAt)
+        let transcript = try await runWhisperPass(streams, configuration: configuration, startedAt: startedAt, progress: printWhisperProgress)
         guard !transcript.segments.isEmpty else {
             fputs("Whisper found no speech in the recording.\n", stderr)
             return
@@ -334,94 +272,25 @@ struct DoctorCommand {
     func run() async {
         let os = ProcessInfo.processInfo.operatingSystemVersionString
         print("muesli \(version) — macOS \(os)")
-
-        // Speech
-        let available = SpeechTranscriber.isAvailable
-        print("\(mark(available)) On-device speech transcription available")
-        if available {
-            let locale = Locale.current
-            if let supported = await SpeechTranscriber.supportedLocale(equivalentTo: locale) {
-                let module = SpeechTranscriber(locale: supported, transcriptionOptions: [], reportingOptions: [], attributeOptions: [])
-                let status = await AssetInventory.status(forModules: [module])
-                // Not installed isn't a failure: the model downloads on first use.
-                let symbol = status == .installed ? "✓" : "•"
-                print("\(symbol) Speech model for \(supported.identifier): \(status)"
-                    + (status == .installed ? "" : "  (downloads automatically on first use)"))
-            } else {
-                print("\(mark(false)) Locale \(locale.identifier) isn't supported by SpeechTranscriber; pass --locale")
+        var section: SetupCheck.Section?
+        for check in await SetupChecks.run(grantee: "your terminal") {
+            if check.section != section {
+                section = check.section
+                print("\(check.section.rawValue):")
             }
-        }
-
-        // Microphone
-        let mic = AVCaptureDevice.authorizationStatus(for: .audio)
-        let micText: String = switch mic {
-        case .authorized: "granted"
-        case .notDetermined: "not asked yet (you'll be prompted on first record)"
-        case .denied: "DENIED — enable your terminal in System Settings → Privacy & Security → Microphone"
-        case .restricted: "restricted by policy"
-        @unknown default: "unknown"
-        }
-        print("\(mark(mic == .authorized || mic == .notDetermined)) Microphone: \(micText)")
-
-        // Whisper (optional second speech engine)
-        print("Whisper (optional engine for more languages):")
-        let whisperDefaults = WhisperConfiguration()
-        if let python = try? WhisperTranscriber(configuration: whisperDefaults).resolvePython() {
-            print("  ✓ mlx-whisper found (\(python))")
-            let cached = WhisperTranscriber.isModelCached(whisperDefaults.model)
-            print("  \(cached ? "✓" : "•") \(whisperDefaults.model): \(cached ? "downloaded" : "not downloaded yet (about 3 GB on first use)")")
-        } else {
-            print("  • mlx-whisper not found. To enable: python3 -m pip install mlx-whisper")
-        }
-
-        // Reminders and Calendar (status only; never prompts)
-        for (kind, name) in [(ProposedAction.Kind.reminder, "Reminders"), (.event, "Calendar")] {
-            let access = EventKitApplier.access(for: kind)
-            let text: String = switch access {
-            case .granted: "granted"
-            case .notDetermined: "not asked yet (you'll be prompted the first time you run `muesli actions`)"
-            case .denied: "DENIED — enable your terminal in System Settings → Privacy & Security → \(name == "Calendar" ? "Calendars" : name)"
-            case .restricted: "restricted by policy"
-            case .writeOnly: "write-only (muesli needs full access to pick a list and undo)"
+            let mark = switch check.status {
+            case .ok: "✓"
+            case .info: "•"
+            case .problem: "✗"
             }
-            print("\(access == .granted || access == .notDetermined ? "✓" : "✗") \(name): \(text)")
+            print("  \(mark) \(check.title): \(check.detail)")
         }
-
-        // Summarizers
-        print("Summarizers:")
-        for kind in [AppleGenerator.Kind.onDevice, .privateCloud] {
-            let generator = AppleGenerator(kind: kind)
-            let name = kind == .onDevice ? "apple        (on-device)" : "apple-cloud  (Private Cloud Compute)"
-            if let reason = AppleGenerator.unavailableReason(kind) {
-                print("  ✗ \(name): \(reason)")
-            } else {
-                let context = await generator.contextTokens().map { ", \($0) token context" } ?? ""
-                print("  ✓ \(name)\(context)")
-            }
-        }
-        let hasKey = !(ProcessInfo.processInfo.environment[AnthropicGenerator.apiKeyEnvironmentVariable] ?? "").isEmpty
-        print("  \(hasKey ? "✓" : "•") anthropic    (\(AnthropicGenerator.apiKeyEnvironmentVariable) \(hasKey ? "is set" : "not set"); default model \(AnthropicGenerator.defaultModel))")
-        print("  • openai       (any OpenAI-compatible server; pass --base-url and --model)")
         if let automatic = Backend.automatic() {
-            print("  Default: \(automatic.rawValue)")
+            print("Default summarizer: \(automatic.rawValue)")
         } else {
-            print("  Default: none; pass --backend")
-        }
-
-        // System audio
-        do {
-            let uid = try SystemAudioCapture.defaultOutputDeviceUID()
-            print("\(mark(true)) Default output device: \(uid)")
-            let probe = SystemAudioCapture()
-            _ = try probe.start()
-            probe.stop()
-            print("\(mark(true)) System-audio tap: can be created")
-        } catch {
-            print("\(mark(false)) System-audio tap: \(error.localizedDescription)")
+            print("Default summarizer: none; pass --backend")
         }
     }
-
-    private func mark(_ ok: Bool) -> String { ok ? "✓" : "✗" }
 }
 
 // MARK: - apps

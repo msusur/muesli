@@ -22,6 +22,7 @@ lib MuesliAudio
 lib MuesliTranscribe
 lib MuesliSummarize
 lib MuesliActions
+lib MuesliSession
 
 cat > "$OUT/Runner.swift" <<'SWIFT'
 import Testing
@@ -37,6 +38,6 @@ swiftc "${FLAGS[@]}" -module-name MuesliTests -F "$FRAMEWORKS" -framework Testin
   -Xlinker -rpath -Xlinker "$FRAMEWORKS" \
   -Xlinker -rpath -Xlinker "$(xcode-select -p)/Library/Developer/usr/lib" \
   -o "$OUT/muesli-tests" "$OUT/Runner.swift" Tests/*/*.swift \
-  "$OUT"/libMuesli{Actions,Summarize,Transcribe,Audio,Core}.a
+  "$OUT"/libMuesli{Session,Actions,Summarize,Transcribe,Audio,Core}.a
 
 "$OUT/muesli-tests"
