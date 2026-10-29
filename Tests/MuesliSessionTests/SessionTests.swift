@@ -67,6 +67,41 @@ struct SessionFolderTests {
         #expect(SessionFolder(root.appending(path: "empty")).displayTitle() == "empty")
     }
 
+    @Test("renaming keeps the timestamp in front, retitles the files, and can be undone")
+    func rename() throws {
+        let root = tempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let folder = SessionFolder(root.appending(path: "2026-10-28-110840"))
+        try folder.saveTranscript(transcript([(.me, "So the plan for the quarter is to ship")]), title: nil)
+        try folder.saveNotes(MeetingNotes(normalizing: GeneratedNotes(title: "Generated title"), context: MeetingContext(start: Date()), generatedBy: "test"))
+        #expect(folder.name == nil)
+
+        let renamed = try folder.rename(to: "  Sprint: planning/review \n")
+        #expect(renamed.url.lastPathComponent == "2026-10-28-110840 Sprint planning review")
+        #expect(renamed.name == "Sprint planning review")
+        #expect(renamed.displayTitle() == "Sprint planning review")
+        #expect(!FileManager.default.fileExists(atPath: folder.url.path))
+        #expect(try String(contentsOf: renamed.file("transcript.md"), encoding: .utf8).hasPrefix("# Sprint planning review\n"))
+        #expect(try renamed.loadNotes().title == "Sprint planning review")
+        #expect(SessionFolder.recent(in: root).map(\.url.lastPathComponent) == [renamed.url.lastPathComponent])
+
+        let undone = try renamed.rename(to: "")
+        #expect(undone.url.lastPathComponent == "2026-10-28-110840")
+        #expect(undone.name == nil)
+        #expect(try String(contentsOf: undone.file("transcript.md"), encoding: .utf8).hasPrefix("# Transcript\n"))
+    }
+
+    @Test("renaming onto another meeting's folder fails without moving anything")
+    func renameClash() throws {
+        let root = tempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let a = SessionFolder(root.appending(path: "2026-10-28-110840"))
+        try a.saveTranscript(transcript([(.me, "a")]), title: nil)
+        try FileManager.default.createDirectory(at: root.appending(path: "2026-10-28-110840 Taken"), withIntermediateDirectories: true)
+        #expect(throws: SessionFolder.RenameError.self) { try a.rename(to: "Taken") }
+        #expect(FileManager.default.fileExists(atPath: a.file(SessionFolder.transcriptFile).path))
+    }
+
     @Test("a missing or corrupt ledger reads as empty, so actions can still be proposed")
     func ledgerFallback() throws {
         let root = tempRoot()

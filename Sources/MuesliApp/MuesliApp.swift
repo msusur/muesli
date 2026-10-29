@@ -159,6 +159,8 @@ struct MenuContent: View {
                         Button("Summarize Now") { model.summarizeNow(session.url) }.disabled(model.phase.isBusy)
                     }
                     Divider()
+                    // Not while summarizing: that writes into the folder.
+                    Button("Rename…") { model.rename(session.url) }.disabled(model.phase != .idle && model.phase != .recording)
                     Button("Show in Finder") { model.reveal(session.url) }
                 }
             }

@@ -54,4 +54,6 @@ final class WindowManager {
         }
         window.makeKeyAndOrderFront(nil)
     }
+
+    func close(_ kind: Kind) { windows[kind]?.close() }
 }

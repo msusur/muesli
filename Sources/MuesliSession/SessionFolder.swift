@@ -1,7 +1,8 @@
 import Foundation
 import MuesliCore
 
-/// The files of one recorded meeting: `~/Muesli/<date-time>/`.
+/// The files of one recorded meeting: `~/Muesli/<date-time>/`, or
+/// `~/Muesli/<date-time> <name>/` once it has been renamed.
 public struct SessionFolder: Sendable, Hashable, Identifiable {
     public static let transcriptFile = "transcript.json"
     public static let notesFile = "notes.json"
@@ -19,9 +20,20 @@ public struct SessionFolder: Sendable, Hashable, Identifiable {
 
     /// `<root>/2026-09-25-143000`.
     public static func new(in root: URL = defaultRoot, startedAt date: Date) -> SessionFolder {
-        let stamp = date.formatted(.iso8601.year().month().day().dateSeparator(.dash).time(includingFractionalSeconds: false).timeSeparator(.omitted))
+        SessionFolder(root.appending(path: stamp(for: date), directoryHint: .isDirectory))
+    }
+
+    /// `2026-09-25-143000`, in UTC, so folder names sort by time.
+    static func stamp(for date: Date) -> String {
+        date.formatted(.iso8601.year().month().day().dateSeparator(.dash).time(includingFractionalSeconds: false).timeSeparator(.omitted))
             .replacingOccurrences(of: "T", with: "-")
-        return SessionFolder(root.appending(path: stamp, directoryHint: .isDirectory))
+    }
+
+    /// The `2026-09-25-143000` the folder's name starts with, if it does.
+    private var stamp: String? {
+        let name = url.lastPathComponent
+        guard let match = name.prefixMatch(of: /\d{4}-\d{2}-\d{2}-\d{6}/) else { return nil }
+        return String(match.output)
     }
 
     public func file(_ name: String) -> URL { url.appending(path: name) }
@@ -77,8 +89,63 @@ public struct SessionFolder: Sendable, Hashable, Identifiable {
             .map { $0 }
     }
 
-    /// A short label for menus: the notes' title if there are notes, else the transcript's first words.
+    // MARK: Naming
+
+    /// The name the user gave the meeting: what follows the timestamp in the folder's name.
+    public var name: String? {
+        guard let stamp else { return nil }
+        let rest = url.lastPathComponent.dropFirst(stamp.count).trimmingCharacters(in: .whitespaces)
+        return rest.isEmpty ? nil : rest
+    }
+
+    public enum RenameError: LocalizedError {
+        case alreadyExists(String)
+
+        public var errorDescription: String? {
+            switch self {
+            case .alreadyExists(let name): "There's already a meeting folder called “\(name)”."
+            }
+        }
+    }
+
+    /// Names the meeting: the folder becomes `<date-time> <name>` (just
+    /// `<date-time>` for an empty name, which undoes a rename), and the titles
+    /// in transcript.md and the notes follow. Returns the moved folder.
+    public func rename(to newName: String) throws -> SessionFolder {
+        let name = Self.cleanName(newName)
+        let stamp = stamp ?? Self.stamp(for: startedAt() ?? Date())
+        let folderName = name.isEmpty ? stamp : "\(stamp) \(name)"
+        let renamed = SessionFolder(url.deletingLastPathComponent().appending(path: folderName, directoryHint: .isDirectory))
+
+        if renamed.url.standardizedFileURL != url.standardizedFileURL {
+            // Only a case change: same folder on a case-insensitive disk, so it can't clash.
+            let caseOnly = folderName.lowercased() == url.lastPathComponent.lowercased()
+            if !caseOnly, FileManager.default.fileExists(atPath: renamed.url.path) { throw RenameError.alreadyExists(folderName) }
+            try FileManager.default.moveItem(at: url, to: renamed.url)
+        }
+
+        if let transcript = try? renamed.loadTranscript() {
+            try transcript.markdown(title: name.isEmpty ? nil : name).write(to: renamed.file("transcript.md"), atomically: true, encoding: .utf8)
+        }
+        if !name.isEmpty, var notes = try? renamed.loadNotes() {
+            notes.title = name
+            try renamed.saveNotes(notes)
+        }
+        return renamed
+    }
+
+    /// One line, without the characters a folder name can't hold.
+    static func cleanName(_ name: String) -> String {
+        let parts = name.components(separatedBy: CharacterSet(charactersIn: "/:").union(.newlines).union(.controlCharacters))
+        var out = parts.joined(separator: " ").split(separator: " ", omittingEmptySubsequences: true).joined(separator: " ")
+        while out.hasPrefix(".") { out.removeFirst() } // no hidden folders
+        return String(out.prefix(120)).trimmingCharacters(in: .whitespaces)
+    }
+
+    /// A short label for menus: the name the user gave it, else the notes'
+    /// title if there are notes, else the transcript's first words.
     public func displayTitle() -> String {
+        if let name { return name }
         if let notes = try? loadNotes(), !notes.title.isEmpty { return notes.title }
         if let transcript = try? loadTranscript(), let first = transcript.segments.first?.text {
             let words = first.split(separator: " ").prefix(6).joined(separator: " ")

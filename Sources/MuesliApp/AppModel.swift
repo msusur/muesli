@@ -384,7 +384,7 @@ final class AppModel {
             do {
                 let transcript = try folder.loadTranscript()
                 let generator = try await makeCheckedGenerator(prefs.backendConfiguration, environment: prefs.environment)
-                await summarize(folder: folder, transcript: transcript, title: nil, generator: generator)
+                await summarize(folder: folder, transcript: transcript, title: folder.name, generator: generator)
             } catch {
                 notifier.post(title: "Couldn't summarize", body: error.localizedDescription, session: url)
             }
@@ -421,6 +421,35 @@ final class AppModel {
     func openNotes(_ url: URL) {
         let folder = SessionFolder(url)
         NSWorkspace.shared.open(folder.file(folder.hasNotes ? "notes.md" : "transcript.md"))
+    }
+
+    /// Asks for a new name for a saved meeting, then renames its folder and titles.
+    func rename(_ url: URL) {
+        let folder = SessionFolder(url)
+        NSApp.activate()
+        let alert = NSAlert()
+        alert.messageText = "Rename Meeting"
+        alert.informativeText = "The meeting's folder is renamed too, keeping the date and time in front so meetings stay in order."
+        let field = NSTextField(string: folder.displayTitle())
+        field.placeholderString = "Meeting name"
+        field.frame = NSRect(x: 0, y: 0, width: 300, height: 24)
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Rename")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = field
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        do {
+            let renamed = try folder.rename(to: field.stringValue)
+            if renamed.url != url {
+                if awaitingReview.remove(url) != nil { awaitingReview.insert(renamed.url) }
+                windows.close(.review(url)) // it reads from the old folder
+            }
+        } catch {
+            let failure = NSAlert(error: error)
+            failure.runModal()
+        }
+        refreshMenuData()
     }
 
     func reveal(_ url: URL) { NSWorkspace.shared.activateFileViewerSelecting([url]) }
