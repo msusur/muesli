@@ -102,7 +102,7 @@ struct LiveTranscriptView: View {
                           systemImage: model.justCopied == .all ? "checkmark" : "doc.on.doc")
                 }
                 .disabled(model.segments.isEmpty)
-                .help("Copy the whole transcript, with timestamps, times of day and your notes")
+                .help("Copy the whole transcript, line for line, with timestamps, times of day and your notes")
             case .ask:
                 Button {
                     ask.clear()

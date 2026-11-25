@@ -354,10 +354,15 @@ final class AppModel {
         lastFolder = nil
     }
 
-    /// Everything said so far, with timestamps, times of day and annotations, like transcript.md.
+    /// Copies from the live panel keep one heading per line on screen, unlike
+    /// transcript.md, which folds a speaker's consecutive lines into one turn.
+    /// Line for line, you can see that nothing was left out.
+    private static let lineForLine: TimeInterval? = nil
+
+    /// Everything said so far, with timestamps, times of day and annotations.
     func copyTranscript() {
         guard let transcript = liveTranscript else { return }
-        copy(transcript.markdown(title: title), as: .all)
+        copy(transcript.markdown(title: title, maxGap: Self.lineForLine), as: .all)
     }
 
     /// Lines and annotations Copy Remaining hasn't copied yet.
@@ -373,7 +378,7 @@ final class AppModel {
         guard let transcript = liveTranscript, remainingCount > 0 else { return }
         let first = copiedSegments.isEmpty && copiedAnnotations.isEmpty
         let remaining = transcript.filtered(segments: { !copiedSegments.contains($0.id) }, annotations: { !copiedAnnotations.contains($0.id) })
-        copy(first ? remaining.markdown(title: title) : remaining.markdownBody(), as: .remaining)
+        copy(first ? remaining.markdown(title: title, maxGap: Self.lineForLine) : remaining.markdownBody(maxGap: Self.lineForLine), as: .remaining)
         copiedSegments.formUnion(remaining.segments.map(\.id))
         copiedAnnotations.formUnion(remaining.annotations.map(\.id))
     }
@@ -382,7 +387,7 @@ final class AppModel {
     func copy(from segment: TranscriptSegment) {
         guard let transcript = liveTranscript else { return }
         let part = transcript.filtered(segments: { $0.start >= segment.start }, annotations: { $0.at >= segment.start })
-        copy(part.markdownBody(), as: .from(segment.id))
+        copy(part.markdownBody(maxGap: Self.lineForLine), as: .from(segment.id))
     }
 
     private func copy(_ text: String, as target: CopyTarget) {

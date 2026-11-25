@@ -128,11 +128,12 @@ public struct Transcript: Codable, Sendable, Equatable {
     // MARK: Rendering
 
     /// Consecutive segments from the same speaker are folded into one turn when
-    /// the pause between them is at most `maxGap` seconds.
-    public func turns(maxGap: TimeInterval = 4) -> [Turn] {
+    /// the pause between them is at most `maxGap` seconds; `nil` keeps every
+    /// segment as its own turn.
+    public func turns(maxGap: TimeInterval? = 4) -> [Turn] {
         var turns: [Turn] = []
         for segment in segments {
-            if var last = turns.last, last.speaker == segment.speaker, segment.start - last.end <= maxGap {
+            if let maxGap, var last = turns.last, last.speaker == segment.speaker, segment.start - last.end <= maxGap {
                 last.text += " " + segment.text
                 last.end = max(last.end, segment.end)
                 turns[turns.count - 1] = last
@@ -158,7 +159,7 @@ public struct Transcript: Codable, Sendable, Equatable {
             .joined(separator: "\n")
     }
 
-    public func markdown(title: String? = nil, maxGap: TimeInterval = 4) -> String {
+    public func markdown(title: String? = nil, maxGap: TimeInterval? = 4) -> String {
         var out = "# \(title ?? "Transcript")\n\n"
         out += "- Date: \(startedAt.formatted(date: .abbreviated, time: .shortened))\n"
         out += "- Duration: \(Self.timestamp(duration))\n"
@@ -168,7 +169,7 @@ public struct Transcript: Codable, Sendable, Equatable {
 
     /// The turns, with annotations after the turn they're on, as in
     /// transcript.md but without its heading and details.
-    public func markdownBody(maxGap: TimeInterval = 4) -> String {
+    public func markdownBody(maxGap: TimeInterval? = 4) -> String {
         var out = ""
         var pending = annotations[...]
         func emitAnnotations(before time: TimeInterval?) {

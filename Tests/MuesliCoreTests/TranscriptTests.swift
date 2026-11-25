@@ -120,6 +120,16 @@ struct TranscriptTests {
         #expect(!t.plainText().contains("Note"))
     }
 
+    @Test("without a gap, every line is its own turn, so a copy matches the screen line for line")
+    func noMerging() {
+        let t = Transcript(startedAt: Date(timeIntervalSince1970: 1_792_928_850), locale: "en-GB", timeZoneIdentifier: "Europe/London",
+                           segments: [seg(.them, 382, 400, "And maybe there's also ways"), seg(.them, 402, 410, "Originally, we were hoping")])
+        #expect(t.turns().count == 1)
+        #expect(t.turns(maxGap: nil).map(\.start) == [382, 402])
+        let body = t.markdownBody(maxGap: nil)
+        #expect(body.contains("**Them** `06:22` (11:53am)  \nAnd maybe there's also ways\n\n**Them** `06:42` (11:54am)  \nOriginally, we were hoping"))
+    }
+
     @Test("a filtered transcript keeps only the chosen lines and annotations")
     func filtered() {
         let t = Transcript(locale: "en-GB", segments: [seg(.me, 0, 1, "a"), seg(.them, 5, 6, "b")],

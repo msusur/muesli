@@ -131,7 +131,10 @@ struct MenuContent: View {
     // MARK: Recording
 
     @ViewBuilder private var recording: some View {
-        Text("Recording · \(formatElapsed(model.elapsed)) · \(model.sourceDescription)")
+        // No elapsed time here: it ticks every second, and a `.menu` MenuBarExtra
+        // rebuilds its whole menu on any change, which flickers while it's open.
+        // The time is in the menu bar next to the icon.
+        Text("Recording · \(model.sourceDescription)")
         if model.systemAudioSilent {
             Button("⚠︎ The other side is silent: allow System Audio Recording…") {
                 NSWorkspace.shared.open(SetupChecks.Pane.systemAudio.url)
