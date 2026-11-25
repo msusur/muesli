@@ -88,4 +88,56 @@ struct TranscriptTests {
         let back = try JSONDecoder().decode(Transcript.self, from: data)
         #expect(back == t)
     }
+
+    @Test("annotations go under the turn they're on, notes from before anything was said come first")
+    func annotationsInMarkdown() {
+        let t = Transcript(
+            startedAt: Date(timeIntervalSince1970: 1_792_928_850), locale: "en-GB", timeZoneIdentifier: "Europe/London",
+            segments: [seg(.them, 31, 33, "Budget is fixed"), seg(.them, 34, 36, "for Q1"), seg(.me, 40, 42, "Okay")],
+            annotations: [.init(at: 40, text: "Agree?"), .init(at: 34, text: "Check with finance\nby Friday"), .init(at: 0, text: "Prep")])
+        #expect(t.annotations.map(\.text) == ["Prep", "Check with finance\nby Friday", "Agree?"])
+        let body = t.markdownBody()
+        #expect(body == """
+            > **Note** `00:00` (11:47am)  
+            > Prep
+
+            **Them** `00:31` (11:48am)  
+            Budget is fixed for Q1
+
+            > **Note** `00:34` (11:48am)  
+            > Check with finance  
+            > by Friday
+
+            **Me** `00:40` (11:48am)  
+            Okay
+
+            > **Note** `00:40` (11:48am)  
+            > Agree?
+
+
+            """)
+        #expect(t.markdown().hasSuffix(body))
+        #expect(!t.plainText().contains("Note"))
+    }
+
+    @Test("a filtered transcript keeps only the chosen lines and annotations")
+    func filtered() {
+        let t = Transcript(locale: "en-GB", segments: [seg(.me, 0, 1, "a"), seg(.them, 5, 6, "b")],
+                           annotations: [.init(at: 0, text: "x"), .init(at: 5, text: "y")])
+        let part = t.filtered(segments: { $0.start >= 5 }, annotations: { $0.at >= 5 })
+        #expect(part.segments.map(\.text) == ["b"])
+        #expect(part.annotations.map(\.text) == ["y"])
+        #expect(part.startedAt == t.startedAt)
+    }
+
+    @Test("annotations round-trip through JSON, and files without them still load")
+    func annotationsCodable() throws {
+        let t = Transcript(startedAt: Date(timeIntervalSince1970: 1_700_000_000), locale: "en-GB", segments: [seg(.me, 0, 1, "Hi")], annotations: [.init(at: 0, text: "note")])
+        #expect(try Transcript.load(jsonData: t.jsonData()) == t)
+
+        let plain = Transcript(locale: "en-GB", segments: [seg(.me, 0, 1, "Hi")])
+        let json = String(decoding: try plain.jsonData(), as: UTF8.self)
+        #expect(!json.contains("annotations"))
+        #expect(try Transcript.load(jsonData: Data(json.utf8)).annotations.isEmpty)
+    }
 }

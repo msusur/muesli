@@ -48,15 +48,50 @@ public struct Transcript: Codable, Sendable, Equatable {
     /// if the notes are generated later or elsewhere. Absent in older files.
     public var timeZoneIdentifier: String?
     public private(set) var segments: [TranscriptSegment]
+    /// Absent in files without annotations, and in older files.
+    private var storedAnnotations: [Annotation]?
+
+    /// A personal note on a moment of the meeting.
+    public struct Annotation: Codable, Sendable, Hashable, Identifiable {
+        public var id: UUID
+        /// Seconds since the session started: the start of the line it's on.
+        public var at: TimeInterval
+        public var text: String
+
+        public init(id: UUID = UUID(), at: TimeInterval, text: String) {
+            self.id = id
+            self.at = at
+            self.text = text
+        }
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case startedAt, locale, timeZoneIdentifier, segments
+        case storedAnnotations = "annotations"
+    }
 
     public init(
         startedAt: Date = Date(), locale: String, timeZoneIdentifier: String? = TimeZone.current.identifier,
-        segments: [TranscriptSegment] = []
+        segments: [TranscriptSegment] = [], annotations: [Annotation] = []
     ) {
         self.startedAt = startedAt
         self.locale = locale
         self.timeZoneIdentifier = timeZoneIdentifier
         self.segments = segments.sorted { $0.start < $1.start }
+        self.annotations = annotations
+    }
+
+    /// Ordered by when in the meeting they're about.
+    public var annotations: [Annotation] {
+        get { storedAnnotations ?? [] }
+        set { storedAnnotations = newValue.isEmpty ? nil : newValue.sorted { $0.at < $1.at } }
+    }
+
+    /// The same meeting with only some of its lines and annotations, e.g. what
+    /// hasn't been copied yet.
+    public func filtered(segments keepSegment: (TranscriptSegment) -> Bool, annotations keepAnnotation: (Annotation) -> Bool) -> Transcript {
+        Transcript(startedAt: startedAt, locale: locale, timeZoneIdentifier: timeZoneIdentifier,
+                   segments: segments.filter(keepSegment), annotations: annotations.filter(keepAnnotation))
     }
 
     /// Inserts keeping segments ordered by start time, so two independently
@@ -128,9 +163,29 @@ public struct Transcript: Codable, Sendable, Equatable {
         out += "- Date: \(startedAt.formatted(date: .abbreviated, time: .shortened))\n"
         out += "- Duration: \(Self.timestamp(duration))\n"
         out += "- Locale: \(locale)\n\n"
-        for turn in turns(maxGap: maxGap) {
+        return out + markdownBody(maxGap: maxGap)
+    }
+
+    /// The turns, with annotations after the turn they're on, as in
+    /// transcript.md but without its heading and details.
+    public func markdownBody(maxGap: TimeInterval = 4) -> String {
+        var out = ""
+        var pending = annotations[...]
+        func emitAnnotations(before time: TimeInterval?) {
+            while let next = pending.first, time.map({ next.at < $0 }) ?? true {
+                let clock = clockTime(startedAt.addingTimeInterval(next.at))
+                let text = next.text.replacingOccurrences(of: "\n", with: "  \n> ")
+                out += "> **Note** `\(Self.timestamp(next.at))` (\(clock))  \n> \(text)\n\n"
+                pending.removeFirst()
+            }
+        }
+        let turns = turns(maxGap: maxGap)
+        // Notes from before anything was said come first.
+        emitAnnotations(before: turns.first?.start)
+        for (i, turn) in turns.enumerated() {
             let clock = clockTime(startedAt.addingTimeInterval(turn.start))
             out += "**\(turn.speaker.label)** `\(Self.timestamp(turn.start))` (\(clock))  \n\(turn.text)\n\n"
+            emitAnnotations(before: i + 1 < turns.count ? turns[i + 1].start : nil)
         }
         return out
     }

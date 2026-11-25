@@ -51,8 +51,23 @@ final class AppModel {
     /// the recording, so the last transcript can still be copied and asked about.
     private(set) var transcriptStartedAt: Date?
     let ask = AskModel()
-    /// Briefly true after Copy All, for the button's "Copied" confirmation.
-    private(set) var transcriptCopied = false
+    let transcriptPanel = TranscriptPanelState()
+    /// The user's notes on moments of the transcript in `segments`.
+    private(set) var annotations: [Transcript.Annotation] = []
+    /// What was just copied, briefly, for the buttons' "Copied" confirmation.
+    private(set) var justCopied: CopyTarget?
+    /// Lines and annotations Copy Remaining has already copied.
+    private(set) var copiedSegments: Set<UUID> = []
+    @ObservationIgnored private var copiedAnnotations: Set<UUID> = []
+    /// Where the last recording was saved, so annotations added afterwards are saved too.
+    @ObservationIgnored private var lastFolder: SessionFolder?
+
+    enum CopyTarget: Hashable {
+        case all
+        case remaining
+        /// From this line to the end.
+        case from(UUID)
+    }
 
     // Menu data
     var source: SystemSource = .everything
@@ -154,6 +169,7 @@ final class AppModel {
         self.title = title
         segments = []
         transcriptStartedAt = nil
+        resetTranscriptExtras()
         ask.clear()
         levels = [:]
         captureNote = nil
@@ -281,6 +297,8 @@ final class AppModel {
                 notifier.post(title: "Nothing saved", body: "No speech was recognized.")
                 return
             }
+            lastFolder = folder
+            if !annotations.isEmpty { saveAnnotations() }
             guard summarize, let generator else {
                 notifier.post(title: "Transcript saved", body: folder.displayTitle(), session: folder.url)
                 return
@@ -316,6 +334,7 @@ final class AppModel {
             startedAt = nil
             transcriptStartedAt = nil
             segments = []
+            resetTranscriptExtras()
             ask.clear()
         }
     }
@@ -325,18 +344,86 @@ final class AppModel {
     /// The transcript so far (or of the last recording), as the saved file would have it.
     var liveTranscript: Transcript? {
         guard let transcriptStartedAt, !segments.isEmpty else { return nil }
-        return Transcript(startedAt: transcriptStartedAt, locale: preferences.locale.identifier, segments: segments)
+        return Transcript(startedAt: transcriptStartedAt, locale: preferences.locale.identifier, segments: segments, annotations: annotations)
     }
 
-    /// Everything said so far, with timestamps and times of day, like transcript.md.
+    private func resetTranscriptExtras() {
+        annotations = []
+        copiedSegments = []
+        copiedAnnotations = []
+        lastFolder = nil
+    }
+
+    /// Everything said so far, with timestamps, times of day and annotations, like transcript.md.
     func copyTranscript() {
         guard let transcript = liveTranscript else { return }
+        copy(transcript.markdown(title: title), as: .all)
+    }
+
+    /// Lines and annotations Copy Remaining hasn't copied yet.
+    var remainingCount: Int {
+        segments.count { !copiedSegments.contains($0.id) } + annotations.count { !copiedAnnotations.contains($0.id) }
+    }
+
+    /// The first time, everything; after that, only what's new since the last
+    /// time, for pasting a meeting in installments. Lines are remembered rather
+    /// than a time, so one that's recognized late, after a newer line from the
+    /// other side, is still copied next time instead of being skipped.
+    func copyRemaining() {
+        guard let transcript = liveTranscript, remainingCount > 0 else { return }
+        let first = copiedSegments.isEmpty && copiedAnnotations.isEmpty
+        let remaining = transcript.filtered(segments: { !copiedSegments.contains($0.id) }, annotations: { !copiedAnnotations.contains($0.id) })
+        copy(first ? remaining.markdown(title: title) : remaining.markdownBody(), as: .remaining)
+        copiedSegments.formUnion(remaining.segments.map(\.id))
+        copiedAnnotations.formUnion(remaining.annotations.map(\.id))
+    }
+
+    /// From a line to the end, with the annotations on those lines.
+    func copy(from segment: TranscriptSegment) {
+        guard let transcript = liveTranscript else { return }
+        let part = transcript.filtered(segments: { $0.start >= segment.start }, annotations: { $0.at >= segment.start })
+        copy(part.markdownBody(), as: .from(segment.id))
+    }
+
+    private func copy(_ text: String, as target: CopyTarget) {
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(transcript.markdown(title: title), forType: .string)
-        transcriptCopied = true
+        NSPasteboard.general.setString(text, forType: .string)
+        justCopied = target
         Task {
             try? await Task.sleep(for: .seconds(1.5))
-            transcriptCopied = false
+            if justCopied == target { justCopied = nil }
+        }
+    }
+
+    // MARK: Annotations
+
+    func annotate(_ segment: TranscriptSegment, text: String) {
+        let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        annotations.append(Transcript.Annotation(at: segment.start, text: text))
+        annotations.sort { $0.at < $1.at }
+        saveAnnotations()
+    }
+
+    /// Changes an annotation's text; empty text deletes it.
+    func updateAnnotation(_ id: UUID, text: String) {
+        let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let index = annotations.firstIndex(where: { $0.id == id }) else { return }
+        if text.isEmpty { annotations.remove(at: index) } else { annotations[index].text = text }
+        // An edited annotation counts as new for Copy Remaining.
+        copiedAnnotations.remove(id)
+        saveAnnotations()
+    }
+
+    func deleteAnnotation(_ id: UUID) { updateAnnotation(id, text: "") }
+
+    /// Once the recording is saved, annotations are written into its transcript
+    /// files. Before that, they're added when it's saved.
+    private func saveAnnotations() {
+        guard let folder = lastFolder, var transcript = try? folder.loadTranscript() else { return }
+        transcript.annotations = annotations
+        do { try folder.saveTranscript(transcript, title: folder.name ?? title) } catch {
+            notifier.post(title: "Couldn't save the annotation", body: error.localizedDescription, session: folder.url)
         }
     }
 
@@ -443,6 +530,7 @@ final class AppModel {
             let renamed = try folder.rename(to: field.stringValue)
             if renamed.url != url {
                 if awaitingReview.remove(url) != nil { awaitingReview.insert(renamed.url) }
+                if lastFolder?.url == url { lastFolder = renamed }
                 windows.close(.review(url)) // it reads from the old folder
             }
         } catch {
